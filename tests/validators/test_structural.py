@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import namedtuple
 from decimal import Decimal
-from typing import Self
+from typing import Any, Self, get_args, get_overloads, get_type_hints
 
 import pytest
 
@@ -234,6 +234,24 @@ def test_ensure_list_passes_a_list_through() -> None:
 def test_ensure_list_turns_none_into_empty() -> None:
     """None becomes an empty list."""
     assert Schema(EnsureList())(None) == []
+
+
+def test_ensure_list_keeps_the_element_type() -> None:
+    """EnsureList overloads __call__ so a caller keeps its element type."""
+    none_case, list_case, scalar_case = (
+        # A type parameter is scoped to its own overload, so resolving the
+        # annotations needs it in the local namespace.
+        get_type_hints(
+            overload,
+            localns={param.__name__: param for param in overload.__type_params__},
+        )
+        for overload in get_overloads(EnsureList.__call__)
+    )
+
+    assert none_case == {"value": type(None), "return": list[Any]}
+    # The element type that goes in is the element type that comes back out.
+    assert get_args(list_case["value"])[0] is get_args(list_case["return"])[0]
+    assert scalar_case["value"] is get_args(scalar_case["return"])[0]
 
 
 def test_sorted_accepts_ordered_and_rejects_unordered() -> None:
