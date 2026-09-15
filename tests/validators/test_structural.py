@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import namedtuple
+from collections.abc import Collection, Iterable, Iterator
 from decimal import Decimal
-from typing import Any, Self, get_args, get_overloads, get_type_hints
+from typing import Any, Self, get_args, get_origin, get_overloads, get_type_hints
 
 import pytest
 
@@ -221,6 +222,32 @@ def test_unique_handles_a_generator_without_leaking() -> None:
     assert Schema(Unique())(gen_ok()) == [1, 2]
 
 
+def test_unique_keeps_the_collection_type() -> None:
+    """Unique overloads __call__ so a caller keeps the type it handed in."""
+    sized_case, iterator_case, fallback_case = (
+        # A type parameter is scoped to its own overload, and the collection
+        # protocols are imported only for typing, so resolving the annotations
+        # needs both in the local namespace.
+        get_type_hints(
+            overload,
+            localns={
+                "Collection": Collection,
+                "Iterator": Iterator,
+                **{param.__name__: param for param in overload.__type_params__},
+            },
+        )
+        for overload in get_overloads(Unique.__call__)
+    )
+
+    # A collection is handed back as it came, down to its own type.
+    assert sized_case["value"] is sized_case["return"]
+    # An iterator has no length, so it is materialized: the item type survives.
+    assert get_args(iterator_case["value"])[0] is get_args(iterator_case["return"])[0]
+    assert iterator_case["return"].__origin__ is list
+    # Anything else still type-checks, and still fails cleanly at runtime.
+    assert fallback_case == {"value": Any, "return": Any}
+
+
 def test_ensure_list_wraps_a_scalar() -> None:
     """EnsureList wraps a scalar into a single-item list."""
     assert Schema(EnsureList())("x") == ["x"]
@@ -252,6 +279,50 @@ def test_ensure_list_keeps_the_element_type() -> None:
     # The element type that goes in is the element type that comes back out.
     assert get_args(list_case["value"])[0] is get_args(list_case["return"])[0]
     assert scalar_case["value"] is get_args(scalar_case["return"])[0]
+
+
+def _mentions(annotation: Any, type_param: Any) -> bool:
+    """Report whether a type parameter appears anywhere inside an annotation."""
+    if annotation is type_param:
+        return True
+    return any(_mentions(argument, type_param) for argument in get_args(annotation))
+
+
+@pytest.mark.parametrize(
+    ("validator", "container"),
+    [
+        (Sort, list),
+        (Dedupe, list),
+        (Without, list),
+        (Set, set),
+        # First and Last pick one item out, so the item type is the return type.
+        (First, None),
+        (Last, None),
+    ],
+    ids=lambda argument: getattr(argument, "__name__", argument),
+)
+def test_a_collection_shaper_keeps_the_element_type(
+    validator: type, container: type | None
+) -> None:
+    """A shaper overloads __call__ so the items it hands back keep their type."""
+    # The first overload is the typed one; the second is the catch-all that keeps
+    # the validator callable with anything, as the safe contract promises.
+    typed_case, catch_all = get_overloads(validator.__call__)
+
+    (type_param,) = typed_case.__type_params__
+    hints = get_type_hints(
+        typed_case,
+        localns={"Iterable": Iterable, type_param.__name__: type_param},
+    )
+    assert _mentions(hints["value"], type_param)
+
+    if container is None:
+        assert hints["return"] is type_param
+    else:
+        assert get_origin(hints["return"]) is container
+        assert get_args(hints["return"]) == (type_param,)
+
+    assert not catch_all.__type_params__
 
 
 def test_sorted_accepts_ordered_and_rejects_unordered() -> None:
