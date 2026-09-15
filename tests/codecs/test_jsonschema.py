@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
+import jsonschema
 import pytest
 
 from probatio import (
@@ -34,6 +35,7 @@ from probatio import (
     FromEpoch,
     Hostname,
     In,
+    Invalid,
     IPAddress,
     IPNetwork,
     IPv4Address,
@@ -62,6 +64,7 @@ from probatio import (
     Url,
 )
 from probatio.codecs.jsonschema import from_json_schema, to_json_schema
+from probatio.codecs.openapi import to_openapi
 
 
 def test_primitive_types() -> None:
@@ -802,6 +805,234 @@ def test_required_alias_with_default_adds_no_constraint() -> None:
     result = to_json_schema(schema)
     assert "allOf" not in result
     assert result["properties"]["name"]["default"] == 5
+
+
+def test_any_key_emits_every_listed_name() -> None:
+    """An Any key over literal names renders each name as a property, not a variable key."""
+    result = to_json_schema(Schema({Any("hours", "minutes"): int}))
+    assert result["properties"] == {
+        "hours": {"type": "integer"},
+        "minutes": {"type": "integer"},
+    }
+    assert result["additionalProperties"] is False
+    assert "allOf" not in result
+
+
+def test_required_any_key_demands_one_name() -> None:
+    """A required Any key adds an anyOf requiring at least one of its names."""
+    result = to_json_schema(
+        Schema(
+            {Required(Any("hours", "minutes", "seconds")): int, Optional("name"): str}
+        )
+    )
+    assert sorted(result["properties"]) == ["hours", "minutes", "name", "seconds"]
+    assert "required" not in result
+    assert result["allOf"] == [
+        {
+            "anyOf": [
+                {"required": ["hours"]},
+                {"required": ["minutes"]},
+                {"required": ["seconds"]},
+            ],
+        },
+    ]
+
+
+def test_required_any_key_follows_the_schema_required_default() -> None:
+    """A bare Any key on a required=True schema demands a name like a bare literal key."""
+    result = to_json_schema(Schema({Any("a", "b"): int}, required=True))
+    assert result["allOf"] == [{"anyOf": [{"required": ["a"]}, {"required": ["b"]}]}]
+
+
+def test_required_any_key_with_default_adds_no_constraint() -> None:
+    """A required Any key with a default fills the empty case, so it demands no name."""
+    result = to_json_schema(Schema({Required(Any("a", "b"), default=1): int}))
+    assert "allOf" not in result
+    assert result["properties"]["a"]["default"] == 1
+    assert result["properties"]["b"]["default"] == 1
+
+
+def test_any_key_with_a_description_decorates_every_name() -> None:
+    """A description on an Any key lands on each of its properties."""
+    result = to_json_schema(Schema({Optional(Any("a", "b"), description="d"): int}))
+    assert result["properties"]["a"]["description"] == "d"
+    assert result["properties"]["b"]["description"] == "d"
+
+
+def test_any_key_over_validators_stays_a_variable_key() -> None:
+    """An Any key holding a type or validator is a variable key, not a set of names."""
+    result = to_json_schema(Schema({Required(Any("a", str)): int}))
+    assert result["properties"] == {}
+    assert result["additionalProperties"] == {"type": "integer"}
+    assert "allOf" not in result
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        Schema({"hours": str, Any("hours", "minutes"): int}),
+        Schema({Any("hours", "minutes"): int, "hours": str}),
+    ],
+    ids=["literal_first", "any_first"],
+)
+def test_literal_key_wins_over_an_any_key_listing_the_same_name(schema: Schema) -> None:
+    """A literal key is matched ahead of an Any key, so its value schema is the one emitted."""
+    result = to_json_schema(schema)
+    assert result["properties"] == {
+        "hours": {"type": "string"},
+        "minutes": {"type": "integer"},
+    }
+    schema({"hours": "text"})
+    assert jsonschema.Draft202012Validator(result).is_valid({"hours": "text"})
+
+
+def test_any_key_names_a_repeated_name_once() -> None:
+    """A name listed twice in an Any key is one property and one required branch."""
+    result = to_json_schema(Schema({Required(Any("a", "a", "b")): int}))
+    assert sorted(result["properties"]) == ["a", "b"]
+    assert result["allOf"] == [
+        {"anyOf": [{"required": ["a"]}, {"required": ["b"]}]},
+    ]
+
+
+def test_any_key_gives_each_name_its_own_property() -> None:
+    """Editing one emitted property does not reach the others the key expanded into."""
+    result = to_json_schema(Schema({Any("a", "b"): int}))
+    assert result["properties"]["a"] is not result["properties"]["b"]
+
+    result["properties"]["a"]["description"] = "only a"
+    assert "description" not in result["properties"]["b"]
+
+
+def test_any_key_never_narrows() -> None:
+    """The emitted document accepts exactly what the mapping accepts."""
+    schema = Schema({Required(Any("hours", "minutes")): int, Optional("name"): str})
+    validator = jsonschema.Draft202012Validator(to_json_schema(schema))
+    for value in (
+        {"hours": 1},
+        {"minutes": 2, "name": "tea"},
+        {"hours": 1, "minutes": 2},
+    ):
+        schema(value)
+        assert validator.is_valid(value)
+    for value in ({}, {"name": "tea"}, {"hours": "x"}):
+        with pytest.raises(Invalid):
+            schema(value)
+        assert not validator.is_valid(value)
+
+
+# Home Assistant's intent slot schemas, as they key a duration or a target on an
+# ``Any`` over literal slot names. ``cv.positive_int`` is
+# ``All(Coerce(int), Range(min=0))``; the string validators render as ``str``.
+_POSITIVE_INT = All(Coerce(int), Range(min=0))
+_HA_START_TIMER = {
+    Required(Any("hours", "minutes", "seconds")): _POSITIVE_INT,
+    Optional("name"): str,
+    Optional("conversation_command"): str,
+}
+_HA_CANCEL_TIMER = {
+    Any("start_hours", "start_minutes", "start_seconds"): _POSITIVE_INT,
+    Optional("name"): str,
+    Optional("area"): str,
+}
+_HA_INCREASE_TIMER = {
+    Any("hours", "minutes", "seconds"): _POSITIVE_INT,
+    Any("start_hours", "start_minutes", "start_seconds"): _POSITIVE_INT,
+    Optional("name"): str,
+    Optional("area"): str,
+}
+_HA_SERVICE_INTENT = {
+    Any("name", "area", "floor"): str,
+    Optional("domain"): [In(["light"])],
+    Optional("preferred_area_id"): str,
+    Optional("preferred_floor_id"): str,
+}
+
+
+def test_home_assistant_start_timer_lists_every_duration_slot() -> None:
+    """HassStartTimer names hours, minutes, and seconds and demands one of them."""
+    duration = {"type": "integer", "minimum": 0}
+    assert to_json_schema(Schema(_HA_START_TIMER)) == {
+        "type": "object",
+        "properties": {
+            "hours": duration,
+            "minutes": duration,
+            "seconds": duration,
+            "name": {"type": "string"},
+            "conversation_command": {"type": "string"},
+        },
+        "additionalProperties": False,
+        "allOf": [
+            {
+                "anyOf": [
+                    {"required": ["hours"]},
+                    {"required": ["minutes"]},
+                    {"required": ["seconds"]},
+                ],
+            },
+        ],
+    }
+
+
+def test_home_assistant_start_timer_document_agrees_with_the_schema() -> None:
+    """The HassStartTimer document accepts and rejects exactly what the schema does."""
+    schema = Schema(_HA_START_TIMER)
+    validator = jsonschema.Draft202012Validator(to_json_schema(schema))
+    for value in ({"minutes": 5}, {"hours": 1, "seconds": 2, "name": "tea"}):
+        schema(value)
+        assert validator.is_valid(value)
+    for value in ({}, {"name": "tea"}, {"minutes": -1}):
+        with pytest.raises(Invalid):
+            schema(value)
+        assert not validator.is_valid(value)
+
+
+def test_home_assistant_optional_duration_slots_add_no_constraint() -> None:
+    """HassCancelTimer's bare Any key lists its slots without demanding one."""
+    result = to_json_schema(Schema(_HA_CANCEL_TIMER))
+    assert sorted(result["properties"]) == [
+        "area",
+        "name",
+        "start_hours",
+        "start_minutes",
+        "start_seconds",
+    ]
+    assert "allOf" not in result
+
+
+def test_home_assistant_increase_timer_keeps_both_any_keys() -> None:
+    """HassIncreaseTimer's two Any keys each expand into their own slots."""
+    result = to_json_schema(Schema(_HA_INCREASE_TIMER))
+    assert sorted(result["properties"]) == [
+        "area",
+        "hours",
+        "minutes",
+        "name",
+        "seconds",
+        "start_hours",
+        "start_minutes",
+        "start_seconds",
+    ]
+
+
+def test_home_assistant_service_intent_lists_every_target_slot() -> None:
+    """A service intent's name, area, and floor slots are properties, not a variable key."""
+    result = to_json_schema(Schema(_HA_SERVICE_INTENT))
+    assert result["properties"]["floor"] == {"type": "string"}
+    assert result["additionalProperties"] is False
+
+
+@pytest.mark.parametrize(
+    "slots",
+    [_HA_START_TIMER, _HA_CANCEL_TIMER, _HA_INCREASE_TIMER, _HA_SERVICE_INTENT],
+    ids=["start_timer", "cancel_timer", "increase_timer", "service_intent"],
+)
+def test_home_assistant_slots_name_the_same_properties_as_openapi(slots: dict) -> None:
+    """Both codecs list the same slot names, so a tool schema reads the same either way."""
+    schema = Schema(slots)
+    assert set(to_json_schema(schema)["properties"]) == set(
+        to_openapi(schema)["properties"]
+    )
 
 
 def test_union_becomes_any_of() -> None:
