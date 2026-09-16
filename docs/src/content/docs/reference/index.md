@@ -453,6 +453,18 @@ A type can carry its own validator, so it validates by more than `isinstance`:
 
 - `__probatio_validate__`: a classmethod a type can define to validate (and coerce) a value itself. Whenever that type is compiled as a bare schema, Probatio calls `Type.__probatio_validate__(value)` instead of an `isinstance` check and uses the return value. Works anywhere a type is used, including a hand-written `Schema(Type)`. See the [custom validators guide](/guides/custom-validators/).
 
+## Annotations
+
+Metadata a value carries beside its contents, kept across every rebuild a schema
+performs (see the [annotations guide](/guides/annotations/)):
+
+- `Annotations(annotations=None, /, **extra)`: an immutable mapping of `str` to anything, built from a mapping, keyword arguments, or both. `merge(annotations=None, /, **extra)` returns a new one with the incoming values winning on a shared key. The mapping is positional-only, so every keyword is an annotation and none is ever read as an option.
+- `ANNOTATIONS_ATTR`: the name of the one attribute a value carries its annotations in, `"__probatio_annotations__"`. A type opts in by declaring it in `__slots__`, by having an ordinary `__dict__`, or by exposing a property of that name over fields it already has.
+- `annotate(value, annotations=None, /, **extra)`: merge annotations into the value's own and return the value. A value that cannot hold them is returned unchanged.
+- `annotations_of(value)`: the value's annotations as an `Annotations`, or `None` when it has none. A value holding something that is not a mapping raises `TypeError`.
+- `carry_annotations(source, target)`: move `source`'s annotations onto `target` and return `target`, for a validator that builds a new container itself. It replaces rather than merges.
+- `supports_annotations(value)`: whether annotations attached to the value would stick.
+
 ## Compile policy
 
 A hot schema compiles itself into a specialized validator; these names control

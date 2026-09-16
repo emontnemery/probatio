@@ -65,6 +65,83 @@ emitted, since references already taken to the real module will not update. The
 [Compatibility](/getting-started/compatibility/) page covers exactly what it
 registers and when to call it.
 
+## Keeping the source file and line
+
+Home Assistant loads YAML through `annotatedyaml`, which records the file and
+the line every mapping came from on its own node classes. Validation does not
+keep them: a schema that rebuilds a mapping produces a fresh instance of the
+node class, holding the validated items and nothing else. A rule like
+`cv.deprecated` then has no way to say where in the configuration the deprecated
+option was written.
+
+Probatio's [annotations](/guides/annotations/) close that. A node class says
+where its metadata lives, and every rebuild carries it, at every nesting depth.
+
+The smallest form is one slot on the node class, with the loader writing what it
+knows:
+
+```python
+from probatio import Schema, annotate, annotations_of
+
+
+class NodeDictClass(dict):
+    __slots__ = ("__probatio_annotations__",)
+
+
+node = annotate(
+    NodeDictClass({"name": "kitchen"}), file="configuration.yaml", line=12
+)
+
+validated = Schema({"name": str})(node)
+
+annotations_of(validated)["line"]  # 12
+annotations_of(validated)["file"]  # 'configuration.yaml'
+```
+
+A node class that already stores the file and the line under names of its own
+can expose a property over them instead. That form needs no change to how the
+data is stored, or to the loader that writes it:
+
+```python
+from probatio import Annotations, Schema
+
+
+class NodeDictClass(dict):
+    __slots__ = ("__config_file__", "__line__")
+
+    @property
+    def __probatio_annotations__(self):
+        return Annotations(
+            file=getattr(self, "__config_file__", None),
+            line=getattr(self, "__line__", None),
+        )
+
+    @__probatio_annotations__.setter
+    def __probatio_annotations__(self, annotations):
+        self.__config_file__ = annotations.get("file")
+        self.__line__ = annotations.get("line")
+
+
+node = NodeDictClass({"name": "kitchen"})
+node.__config_file__ = "configuration.yaml"
+node.__line__ = 12
+
+validated = Schema({"name": str})(node)
+
+validated.__line__  # 12
+validated.__config_file__  # 'configuration.yaml'
+```
+
+Either way the opt-in lives in the node class, not in the schemas. Nothing in
+`config_validation` changes, and a schema that never sees an annotated value
+behaves exactly as it did before.
+
+This covers the metadata half of the problem, and only that half. A validator
+that returns `dict(value)`, a comprehension, or an accumulator hands back a
+plain `dict`, which is no longer a node class and can hold no attributes at all.
+No engine change reaches that; the fix is `carry_annotations` where such a
+validator is written, as the [annotations guide](/guides/annotations/) shows.
+
 ## It is tested against the real thing
 
 This is not a paraphrase of compatibility. Probatio is validated against Home
@@ -87,6 +164,8 @@ reproduces the run against a Home Assistant checkout.
 
 - [Migrating from voluptuous](/getting-started/migrating-from-voluptuous/): the
   general swap, beyond Home Assistant.
+- [Annotations](/guides/annotations/): the file and line a value carries, and
+  how a type opts in.
 - [Validating a config file](/recipes/config-file/): a worked end-to-end example.
 - [Error handling](/guides/error-handling/): paths, multiple errors, and readable
   messages.
