@@ -74,10 +74,13 @@ is a deliberate improvement over a sharp edge:
 - A `dict` or `list` subclass keeps the state it carries, not only its class.
   Both libraries rebuild the container as the input's own type, but voluptuous
   builds an empty one, so whatever the original held in `__dict__` or
-  `__slots__` is dropped. Probatio copies it across through the standard
-  `object.__getstate__` protocol (ADR-018), so a Home Assistant `NodeDictClass`
-  still knows the file and line it came from after validation and a config error
-  can still point at it. Additive: a plain `dict` or `list` has no such state.
+  `__slots__` is dropped. Probatio copies those across (ADR-018), so a Home
+  Assistant `NodeDictClass` still knows the file and line it came from after
+  validation and a config error can still point at it. It is the default
+  instance state that is carried, read through `object.__getstate__` held
+  unbound; a custom `__getstate__`/`__setstate__` pair is never called, so the
+  state those exchange is out of scope. Additive: a plain `dict` or `list` has
+  no instance state at all.
 - A callable validator that raises `ValueError("reason")` keeps the reason in
   the error ("not a valid value: reason"), where voluptuous drops it. A
   `ValueError` with no message still reads "not a valid value".

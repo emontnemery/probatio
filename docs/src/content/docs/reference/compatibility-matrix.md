@@ -308,16 +308,19 @@ Probatio does.
   rebuild a container as the input's own type, so a subclass survives
   validation. voluptuous builds a fresh, empty instance of it, which keeps the
   class and drops everything the original held in its `__dict__` or its
-  `__slots__`. Probatio copies that state onto the rebuilt container through the
-  standard `object.__getstate__` protocol, so a class that pickles correctly
-  carries correctly with no opt-in. Home Assistant's YAML nodes record their
-  source file and line that way, and used to lose it on every schema rebuild;
-  now a config error can still say which line it is about. Additive: a plain
-  `dict` or `list` has no instance state, so nothing changes for it, and a
-  container rebuilt as a plain one (a foreign `Mapping`, a `Coerce(dict)`, a
-  subclass whose constructor cannot be called with one iterable) still comes
-  back plain. A class whose own `__getstate__` raises simply carries nothing;
-  validation is never failed over it.
+  `__slots__`. Probatio copies that state onto the rebuilt container, with no
+  opt-in. Home Assistant's YAML nodes record their source file and line that
+  way, and used to lose it on every schema rebuild; now a config error can still
+  say which line it is about. What is carried is the _default_ instance state
+  (the `__dict__` and the set `__slots__` that `object.__getstate__` returns,
+  read unbound): a custom `__getstate__`/`__setstate__` pair is never called, so
+  the state those exchange is out of scope, and a class that defines them still
+  carries its plain attributes like any other. Additive: a plain `dict` or
+  `list` has no instance state, so nothing changes for it, and a container
+  rebuilt as a plain one (a foreign `Mapping`, a `Coerce(dict)`, a subclass
+  whose constructor cannot be called with one iterable) still comes back plain.
+  Copying the attributes can itself fail against a hostile `__setattr__`; that
+  costs the state, never the validation.
 - **The rendered error string, `str(error)` (ADR-015).** voluptuous renders
   `expected int for dictionary value @ data['server']['port']`. Probatio renders
   the same error as `expected int at 'server.port'`: the path is a dotted trail

@@ -74,11 +74,16 @@ message read "The 'old' option near configuration.yaml:12 is deprecated".
 
 Validating a mapping or a sequence rebuilds it, and a rebuilt container is a
 fresh instance, so the annotation has to be carried across or it is gone after
-the first schema. Probatio carries it, through the standard
-`object.__getstate__` protocol, everywhere it rebuilds a container as the
+the first schema. Probatio carries it everywhere it rebuilds a container as the
 input's own class. Nothing registers anything and there is no Probatio-specific
-hook: a class that pickles its state correctly keeps it. A `str` node is a
-scalar, never rebuilt, so it keeps its annotation by construction.
+hook: what gets carried is the instance's own attributes, its `__dict__` and its
+set `__slots__`, which is exactly where the node classes keep their annotation.
+A `str` node is a scalar, never rebuilt, so it keeps its annotation by
+construction.
+
+The state Probatio reads is the default instance state (`object.__getstate__`
+read unbound), not whatever a custom `__getstate__`/`__setstate__` pair would
+exchange. The node classes define neither, so they are carried in full.
 
 voluptuous keeps the class but not the state, so this is a deliberate deviation;
 see the [intentional

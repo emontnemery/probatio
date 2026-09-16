@@ -41,24 +41,44 @@ place the engine rebuilds a container as the input's own type:
   `out_type(*result)` rebuild.
 - `ExactSequence.__call__`, which repeats the same rebuild.
 
-Using the standard protocol, rather than a probatio-specific opt-in dunder, is the
-point of the decision. A class that already pickles correctly carries correctly;
-nobody has to learn about, or import, a Probatio hook to keep the state they
-already model in the normal way. It also keeps the library honest about the drop-in
-promise: Probatio holds no knowledge of `annotatedyaml` or of Home Assistant, and
-any annotating loader gets the same behavior.
+Using a standard accessor, rather than a probatio-specific opt-in dunder, is the
+point of the decision. Nobody has to learn about, or import, a Probatio hook to
+keep state they already model in the normal way. It also keeps the library honest
+about the drop-in promise: Probatio holds no knowledge of `annotatedyaml` or of
+Home Assistant, and any annotating loader gets the same behavior.
 
-A class may override `__getstate__`, which makes it user code running outside the
-validation itself. A broken override must not turn a valid value into a
-non-`Invalid` exception, so any failure in the carry is swallowed and the rebuilt
-container is simply left without the carried state. That is exactly the behavior
-before this ADR, so the degradation is to the old, safe result rather than to a
-crash.
+`object.__getstate__` is read **unbound**, so a subclass that overrides
+`__getstate__` does not redirect the read. The scope is therefore the default
+instance state and nothing else. That bound is deliberate, not an oversight:
+
+- The shape of the value is then guaranteed by the interpreter. Read through the
+  instance, an override may return any object at all, and probatio would have to
+  either guess at it (a custom two-tuple of non-dicts would be _misread_ as a
+  dict/slots pair) or discard it.
+- Honoring an override properly means calling `__setstate__` on the destination,
+  which runs user code against a container that already holds the _validated_
+  items. A `__setstate__` that also restores contents, which is a normal thing for
+  one to do, would put the unvalidated items back and silently undo the
+  validation. That is the same hazard that keeps `_ObjectValidator` out of this
+  ADR, and it gets the same answer.
+- Bypassing the override also means no user code runs to _read_ the state, so the
+  cost and the behavior are the same for every class.
+
+Copying the attributes still touches user code at the edges: a slot may resolve
+through a descriptor, and the destination may define `__setattr__`. That code
+failing is not a validation failure, so any error in the carry is swallowed and
+the rebuilt container keeps whatever was applied before the failure, in the worst
+case nothing. That is the behavior before this ADR, so the degradation is to the
+old, safe result rather than to a crash. `BaseException` still propagates.
 
 This is a deliberate, documented deviation from voluptuous (ADR-001). voluptuous
-builds `data.__class__()` and drops the state too, so nothing that passes
-validation today changes its result: only attributes that used to be missing are
-now present.
+builds `data.__class__()` and drops the state too. No schema starts accepting or
+rejecting different data, and no validated _value_ changes, with one narrow
+exception: in the mapping engine the state is applied before the items, so a
+subclass whose own `__setitem__` reads that state now reads it. Such a subclass
+previously raised `AttributeError` out of the engine, or read a fallback; it now
+sees the real state. Turning that crash into a success is the point, and the
+ordering is what makes a state-dependent subclass usable at all.
 
 **Alternatives considered**:
 
@@ -72,6 +92,15 @@ now present.
   a class hierarchy, a class that models `__slots__` as a bare string, a class that
   wants to control what it exposes. Reimplementing a protocol that already exists
   buys nothing. Rejected.
+- **Reading `__getstate__` through the instance and restoring through
+  `__setstate__`.** The full pickle round trip, which would make "anything that
+  pickles, carries" literally true. Rejected: `__setstate__` runs user code
+  against a container that already holds the validated items, so a `__setstate__`
+  that restores contents would undo the validation, and it doubles the amount of
+  user code the engine executes per container node for a case no annotating
+  loader has. Reading the override _without_ honoring `__setstate__`, which is
+  what the first draft of this change did, is worse than either end: it can
+  misread a custom two-tuple as a dict/slots pair.
 - **Carrying nothing and documenting the loss.** The status quo. It leaves Home
   Assistant with worse error messages than it had on voluptuous plus
   `annotatedyaml`, for no gain. Rejected.
@@ -87,13 +116,18 @@ now present.
   annotated node keeps its source file and line through any number of nested schema
   rebuilds. Home Assistant's `cv.deprecated()` message reads the same before and
   after validation.
-- Nothing opts in and nothing can opt out short of overriding `__getstate__`. A
-  class that does not want its state carried can return `None` from it, which is
-  also how it would exclude that state from pickling.
+- Nothing opts in and there is no opt-out. A class cannot suppress the carry by
+  overriding `__getstate__`, because the override is never read. A class that
+  must not have an attribute copied should not hold it on the instance.
+- Custom pickle state is not carried. A class with a `__getstate__`/`__setstate__`
+  pair still gets its plain attributes copied like any other class; only the
+  private representation those two exchange is out of scope, and it is documented
+  as such rather than being silently attempted.
 - The plain `dict` and plain `list` paths pay nothing: the mapping engine only
   reaches the carry when it has constructed a real subclass instance, and the
   helper returns immediately for an exact built-in container. A subclass pays one
-  `__getstate__` call, which returns `None` when there is no state. Measured on a
+  C-level `object.__getstate__` call, which returns `None` when there is no state.
+  Measured on a
   10 500-line Home Assistant configuration (about 4500 container nodes) the whole
   carry costs roughly 0.3 ms, about 66 ns per container node.
 - The compiled engine (ADR-011) is unaffected, and needs no generated code for

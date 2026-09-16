@@ -58,9 +58,14 @@ def _type_error(expected: str, path: list[Any], error_type: str | None) -> TypeI
 # of its own, so a rebuild of one has nothing to carry and returns immediately.
 _PLAIN_CONTAINERS: frozenset[type] = frozenset({dict, list, tuple, set, frozenset})
 
+# ``object.__getstate__`` held unbound, so the carry always reads the *default*
+# instance state. Calling it through the instance would dispatch to a subclass's
+# override instead; see ``_carry_subclass_state`` for why that is not wanted.
+_default_state = object.__getstate__
+
 
 def _carry_subclass_state(src: Any, dst: Any) -> None:
-    """Copy a container subclass's own instance state onto its rebuilt twin.
+    """Copy a container subclass's default instance state onto its rebuilt twin.
 
     Validating a ``dict`` or ``list`` subclass rebuilds it as the same class, but
     as a fresh, empty instance: the type survives and everything the original
@@ -69,23 +74,37 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
     rebuild cost a config error its "near configuration.yaml:12". This copies that
     state across, so a rebuilt container is the original in content *and* state.
 
-    The state is read through ``object.__getstate__``, the standard protocol
-    pickle and ``copy`` already use, so any class that pickles correctly carries
-    correctly and nothing has to opt in to a probatio-specific hook. It returns
-    ``None`` when there is nothing to carry (the common case), a plain dict for an
-    instance ``__dict__``, and a ``(dict_or_None, slots_dict)`` pair when
-    ``__slots__`` are involved, with an unset slot simply absent.
+    What is carried is exactly the *default* instance state: the instance
+    ``__dict__`` and the set ``__slots__``, read through ``object.__getstate__``
+    held unbound. That returns ``None`` when there is nothing to carry (the
+    common case, and the cheap one), a plain dict for an instance ``__dict__``,
+    and a ``(dict_or_None, slots_dict)`` pair when ``__slots__`` are involved,
+    with an unset slot simply absent. Reading it unbound means the shape is
+    guaranteed by the interpreter rather than by whatever a subclass returns.
 
-    A class may override ``__getstate__``, and that override is user code running
-    outside the validation itself. A broken one must not turn a valid value into a
-    non-``Invalid`` exception, so any failure here is swallowed: the rebuilt
-    container is left without the carried state, which is exactly the behavior
-    before this existed.
+    Custom pickle state is deliberately out of scope. A class may pair an
+    overridden ``__getstate__`` with a ``__setstate__`` and return any object at
+    all; probatio neither reads that override nor calls ``__setstate__``. Doing
+    so would run user code that is free to rewrite the container it is handed,
+    which here is a container already holding the *validated* items, so a
+    ``__setstate__`` that also restores contents would quietly put the
+    unvalidated ones back. That is the same hazard that keeps ``_ObjectValidator``
+    from carrying state, and the same answer: reconstruct nothing, copy the
+    attributes.
+
+    Copying the attributes still touches user code at the edges (a slot may be a
+    descriptor, and ``dst`` may define ``__setattr__``), and that code failing is
+    not a validation failure. So any error here is swallowed and the rebuilt
+    container keeps whatever was applied before the failure, which in the worst
+    case is nothing: exactly the behavior before this existed. ``BaseException``
+    still propagates.
     """
     if type(src) in _PLAIN_CONTAINERS:
         return
     try:
-        state = src.__getstate__()
+        # Annotated: ``object.__getstate__`` is typed as returning ``object``,
+        # but its value is a protocol shape the lines below destructure.
+        state: Any = _default_state(src)
         if state is None:
             return
         if type(state) is tuple:
@@ -93,16 +112,15 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
         else:
             mapping, slots = state, None
         if mapping:
-            # Only an overridden ``__getstate__`` can pair a mapping with a
-            # slots-only class, which has no ``__dict__`` to write it into, so
-            # look the attribute up rather than assume it.
-            instance_dict = getattr(dst, "__dict__", None)
-            if instance_dict is not None:
-                instance_dict.update(mapping)
+            # ``dst`` is a fresh instance of ``src``'s own class, and the default
+            # state only holds a mapping when that class has a ``__dict__``, so
+            # ``dst`` has one too. (A ``__new__`` that hands back some other type
+            # could break that; the surrounding ``try`` covers it.)
+            dst.__dict__.update(mapping)
         if slots:
             for name, value in slots.items():
                 setattr(dst, name, value)
-    except Exception:  # noqa: BLE001 - __getstate__ is user code; never leak
+    except Exception:  # noqa: BLE001 - a descriptor or __setattr__ may raise
         return
 
 

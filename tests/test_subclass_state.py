@@ -399,45 +399,59 @@ def test_both_instance_dict_and_slots_are_carried() -> None:
     assert result.tag == "kitchen"
 
 
-def test_a_mapping_for_a_slots_only_node_is_skipped_not_raised() -> None:
-    """An overridden __getstate__ offering a __dict__ to a slots-only class is ignored."""
+def test_an_overridden_getstate_is_never_called() -> None:
+    """A subclass __getstate__ cannot intercept the carry: the read is unbound."""
 
-    class Lying(dict):
-        __slots__ = ("__line__",)
+    class Hostile(dict):
+        __slots__ = ("__config_file__", "__line__")
 
-        def __getstate__(self) -> dict[str, typing.Any]:
-            return {"impossible": 1}
-
-    result = Schema({"a": int})(Lying({"a": 1}))
-    assert result == {"a": 1}
-    assert type(result) is Lying
-
-
-def test_a_broken_getstate_does_not_fail_the_validation() -> None:
-    """A __getstate__ that raises costs the state, never the whole validation."""
-
-    class Broken(dict):
-        def __getstate__(self) -> dict[str, typing.Any]:
-            message = "no state for you"
+        def __getstate__(self) -> typing.Any:
+            message = "never called"
             raise RuntimeError(message)
 
-    result = Schema({"a": int})(Broken({"a": 1}))
+    result = Schema({"a": int})(_annotate(Hostile({"a": 1}), 12))
     assert result == {"a": 1}
-    assert type(result) is Broken
-    assert result.__dict__ == {}
+    assert type(result) is Hostile
+    assert _source(result) == (_FILE, 12)
 
 
-def test_a_getstate_returning_a_wrong_shape_is_ignored() -> None:
-    """A __getstate__ returning something unusable is dropped, not unpacked blindly."""
+def test_custom_pickle_state_is_out_of_scope() -> None:
+    """A custom __getstate__/__setstate__ pair is skipped; attributes still carry."""
 
-    class Odd(list):
-        def __getstate__(self) -> tuple[typing.Any, ...]:
-            return (1, 2, 3)
+    class Custom(list):
+        def __getstate__(self) -> typing.Any:
+            return ("custom", "payload")
 
-    result = Schema([int])(Odd([1, 2]))
+        def __setstate__(self, state: typing.Any) -> None:
+            self.restored = state
+
+    node = Custom([1, 2])
+    node.own = "attr"
+
+    result = Schema([int])(node)
     assert result == [1, 2]
-    assert type(result) is Odd
-    assert result.__dict__ == {}
+    assert type(result) is Custom
+    assert result.own == "attr"
+    assert not hasattr(result, "restored")
+
+
+def test_a_subclass_that_refuses_the_state_still_validates() -> None:
+    """A __setattr__ that rejects the state costs the state, not the validation."""
+
+    class Locked(dict):
+        __slots__ = ("__line__",)
+
+        def __setattr__(self, name: str, value: typing.Any) -> None:
+            message = "read-only"
+            raise AttributeError(message)
+
+    node = Locked({"a": 1})
+    object.__setattr__(node, "__line__", 12)
+
+    result = Schema({"a": int})(node)
+    assert result == {"a": 1}
+    assert type(result) is Locked
+    assert not hasattr(result, "__line__")
 
 
 def test_state_is_carried_before_the_fill_so_setitem_sees_it() -> None:

@@ -78,11 +78,20 @@ data  # {'port': '443'}  (unchanged)
 
 ### A container subclass keeps its type and its state
 
-A `dict` or `list` subclass comes back as that subclass, not as a plain `dict` or
-`list`. The result is a fresh instance of it, so Probatio copies the original's
-own instance state (its `__dict__` and its `__slots__`) onto the rebuilt
-container, through the standard `object.__getstate__` protocol. Any class that
-pickles correctly carries correctly; nothing has to opt in.
+A `dict` or `list` subclass comes back as that subclass whenever Probatio can
+rebuild it as one, which is every subclass whose constructor accepts the
+validated items. (A subclass that takes some other constructor signature still
+falls back to a plain `dict` or `list`, as it always has.) The rebuilt container
+is a fresh instance, so Probatio copies the original's instance state onto it:
+its `__dict__` and its set `__slots__`, read through `object.__getstate__`.
+Nothing has to opt in.
+
+That is the default instance state, and only that. A class that defines its own
+`__getstate__`/`__setstate__` pair keeps its plain attributes like any other
+class, but the custom state those two exchange is not carried: Probatio never
+calls either of them. Reconstructing an object through `__setstate__` would run
+user code against a container that already holds the validated items, and a
+`__setstate__` that restores contents would put the unvalidated ones back.
 
 That is what keeps an annotating loader's bookkeeping alive. Home Assistant's
 YAML loader records the file and line of every node in `__slots__`, and those
