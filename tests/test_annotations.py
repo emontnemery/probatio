@@ -692,64 +692,65 @@ def test_a_setter_cannot_replace_an_exact_sequence_item() -> None:
     assert list(result) == [1, 2]
 
 
-def test_the_carrier_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-type writer cache clears when it fills, so it cannot grow forever."""
-    monkeypatch.setattr(annotations_module, "_WRITERS_LIMIT", 4)
-    monkeypatch.setattr(annotations_module, "_WRITERS", {})
-    for index in range(10):
-        carrier = type(f"Carrier{index}", (dict,), {"__slots__": (ANNOTATIONS_ATTR,)})
-        assert supports_annotations(carrier()) is True
-    assert len(annotations_module._WRITERS) <= 4
+def test_a_class_that_turns_hostile_after_caching_degrades_to_a_no_op() -> None:
+    """A carrier that starts refusing writes after being cached fails quietly."""
+    # The eligibility answer is cached per class and a class namespace stays mutable,
+    # so a cached answer can go stale. A carrier class is first-party code and is not
+    # sandboxed (see ADR-018), but a stale answer must still not raise out of a
+    # validator: a carrier's fault is never a validation failure.
 
-
-def test_a_mismatched_cached_writer_degrades_to_a_no_op(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A cached write path that does not fit its type abandons the write, not raises.
-
-    The cache maps a class to the mechanism for writing its annotation attribute. If
-    an entry were ever wrong for the value in hand, the write must fail quietly: a
-    carrier problem is never a validation failure.
-    """
-    foreign = AnnotatedList.__dict__[ANNOTATIONS_ATTR]
-    monkeypatch.setattr(annotations_module, "_WRITERS", {AnnotatedDict: foreign})
-
-    value = AnnotatedDict({"a": "x"})
-    assert annotate(value, SOURCE) is value
-    assert annotations_of(value) is None
-    assert carry_annotations(annotated_dict(), value) is value
-
-
-def test_a_class_that_gains_a_setter_after_caching_cannot_corrupt() -> None:
-    """A carrier cached as safe, then given a hostile setter, still cannot inject.
-
-    The eligibility answer is cached per class, and a class namespace stays mutable,
-    so the cached answer can go stale. It cannot go dangerous: what is cached is the
-    way to write the attribute, not permission to call ``setattr``, so a setter
-    installed later is never the thing that runs.
-    """
-
-    class Mutable(dict):
-        """Starts as an ordinary slot carrier."""
+    class Turncoat(dict):
+        """An ordinary slot carrier, until it is not."""
 
         __slots__ = ("__probatio_annotations__",)
 
-    schema = Schema({"a": str}, extra=PREVENT_EXTRA)
-    first = annotate(Mutable({"a": "x"}), SOURCE)
-    assert_carried(schema(first), Mutable)
+    assert supports_annotations(Turncoat()) is True
 
-    def hostile(self: Any, _value: Any) -> None:
-        """Inject an unvalidated key, the way a real attack would."""
-        self["injected"] = "not validated"
+    def refuse(_self: Any, _name: str, _value: Any) -> None:
+        """Refuse every attribute write from here on."""
+        message = "no writes"
+        raise RuntimeError(message)
 
-    def quiet(_self: Any) -> None:
-        """Report nothing, so only the setter is interesting."""
-        return
+    Turncoat.__setattr__ = refuse  # type: ignore[method-assign, assignment]
 
-    Mutable.__probatio_annotations__ = property(quiet, hostile)  # type: ignore[assignment]
+    value = Turncoat({"a": "x"})
+    assert annotate(value, SOURCE) is value
+    assert carry_annotations(annotated_dict(), value) is value
 
-    result = schema(annotate(Mutable({"a": "x"}), SOURCE))
-    assert "injected" not in result
+
+def test_the_carrier_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-type answer cache clears when it fills, so it cannot grow forever."""
+    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE_LIMIT", 4)
+    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE", {})
+    for index in range(10):
+        carrier = type(f"Carrier{index}", (dict,), {"__slots__": (ANNOTATIONS_ATTR,)})
+        assert supports_annotations(carrier()) is True
+    assert len(annotations_module._PLAIN_ATTRIBUTE) <= 4
+
+
+def test_a_plain_class_default_still_uses_the_instance_dict() -> None:
+    """An ordinary class attribute of that name is shadowed, so the type still carries."""
+
+    class Defaulted(dict):
+        """Declares a default and keeps an ordinary instance dict."""
+
+        __probatio_annotations__ = None
+
+    assert supports_annotations(Defaulted()) is True
+    result = Schema({"a": str})(annotate(Defaulted({"a": "x"}), SOURCE))
+    assert_carried(result, Defaulted)
+
+
+def test_a_plain_class_default_without_an_instance_dict_is_not_a_carrier() -> None:
+    """With no instance dict there is nowhere for the write to land, default or not."""
+
+    class Defaulted(dict):
+        """Declares a default but no storage to shadow it with."""
+
+        __slots__ = ()
+        __probatio_annotations__ = None
+
+    assert supports_annotations(Defaulted()) is False
 
 
 def test_a_hostile_metaclass_cannot_break_the_carry() -> None:

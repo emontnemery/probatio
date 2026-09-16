@@ -136,8 +136,8 @@ node.__probatio_annotations__ = location("configuration.yaml", 12)
 ```
 
 Measured on CPython 3.14, per node: `annotate(node, file=..., line=...)` costs
-388 ns, a direct assignment of a fresh `Annotations` 199 ns, and a direct
-assignment of a shared one 36 ns, against 26 ns for the two plain slot stores the
+469 ns, a direct assignment of a fresh `Annotations` 244 ns, and a direct
+assignment of a shared one 36 ns, against 27 ns for the two plain slot stores the
 loader does today. Sharing also decides the memory: an `Annotations` and its
 backing mapping are about 264 bytes, so one per distinct location costs far less
 than one per node.

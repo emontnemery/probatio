@@ -232,6 +232,23 @@ validated = Schema({"name": str})(Node({key: "kitchen"}))
 [annotations_of(key)["line"] for key in validated]  # [5]
 ```
 
+That holds while the key survives as itself, which covers a literal key and a type
+key. A key schema that _builds_ a new key, such as `Coerce(str)`, produces a
+different object, and the annotations belonged to the old one:
+
+```python
+from probatio import Coerce, Schema, annotate, annotations_of
+
+
+class Key(str):
+    __slots__ = ("__probatio_annotations__",)
+
+
+validated = Schema({Coerce(str): str})({annotate(Key("name"), line=5): "kitchen"})
+
+[annotations_of(key) for key in validated]  # [None]
+```
+
 ## Reading and adding from a validator
 
 Four helpers are the whole validator-facing API. `annotate` merges annotations
@@ -449,21 +466,19 @@ the container they built without a carry.
 
 Measured on CPython 3.14, per call to `carry_annotations`:
 
-- a subclass that does not opt in: **33 ns**,
-- a slot carrier with the annotations set: **63 ns**,
-- a slot carrier declared but _not_ set on this value: **130 ns**, because the slot
+- a subclass that does not opt in: **35 ns**,
+- a slot carrier with the annotations set: **66 ns**,
+- a slot carrier declared but _not_ set on this value: **125 ns**, because the slot
   descriptor exists and raises on the read,
-- a value Probatio will not carry onto, such as a property carrier: **37 ns**, the
+- a value Probatio will not carry onto, such as a property carrier: **34 ns**, the
   cost of the check that declines it.
 
 The third of those is worth designing around: if a loader declares the slot on
 every node but sets it on only some, the unset ones are the expensive case, not
 the cheap one. Have the loader set the attribute unconditionally.
 
-In aggregate, on a 1500-entry nested config (1502 rebuilt containers), a slot
-carrier with its annotations set costs about 42 ns per container beyond a subclass
-that does not opt in, roughly 0.06 ms for the
-whole document.
+In aggregate, on a 1500-entry nested config (1502 rebuilt containers), the carry
+costs roughly 55 ns per container, about 0.08 ms for the whole document.
 
 ## Where to next
 

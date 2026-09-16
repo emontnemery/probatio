@@ -84,14 +84,14 @@ Three ways to close it were considered.
   validator's own.
 - **It is the cheapest of the three.** One attribute read and one attribute write,
   behind one cached lookup of how to perform the write. Measured on CPython 3.14,
-  `carry_annotations` costs 84 ns per rebuilt value for a slot carrier with its
-  annotations set, 43 ns for a subclass that never opted in, 127 ns for a slot
+  `carry_annotations` costs 66 ns per rebuilt value for a slot carrier with its
+  annotations set, 35 ns for a subclass that never opted in, 125 ns for a slot
   declared but left unset on that value (the descriptor exists and raises on the
-  read), and 43 ns for a value it declines to carry onto. Reading the full default
+  read), and 34 ns for a value it declines to carry onto. Reading the full default
   state through `object.__getstate__` is several times a plain write, and allocates a
   state tuple and a dict to report it. On a 1500-entry nested config (1502 rebuilt
-  containers) the carry itself costs 55 ns per container, about 0.08 ms for the
-  document; a plain `dict` or `list` input is unchanged, because the generated
+  containers) the carry itself costs roughly 55 ns per container, about 0.08 ms for
+  the document; a plain `dict` or `list` input is unchanged, because the generated
   validators take it and never reach the carry at all.
 
 - **The attribute is the whole protocol.** No registration, no dunder method, no
@@ -132,20 +132,39 @@ change to any existing signature. Points to fix in the design and the docs:
   annotated object's metadata is never offered to the attribute schema as a field
   (where `PREVENT_EXTRA` would reject it) and an unset slot is never read. It is
   carried onto the constructed object like any other rebuild, under the same rule.
-- **The carry writes through a captured path, not `setattr`.** What is cached per
-  type is _how_ to write the attribute: the slot's member descriptor, or the instance
-  `__dict__`. A class namespace stays mutable, so a cached answer can go stale, and
-  capturing the mechanism is what keeps stale from meaning dangerous: a property
-  installed after the fact is never the thing that runs, because `setattr` is never
-  what is called. Recomputing per carry was the alternative and costs 264 ns against
-  a 10 ns lookup, five times the carry itself.
+- **A carrier class is first-party code, and is trusted like one.** probatio writes
+  the annotation attribute with `setattr`, so a class that defines a property of that
+  name would have its setter run on a value validation has just produced, and that
+  setter could add a key a mapping schema never saw. The rule below rejects such a
+  class, which closes that door, but it is worth being clear about why the door is
+  worth closing: not because a carrier is untrusted. It is not. A plain validator
+  callable can already do exactly the same thing, and more, with nothing in its way:
+
+  ```python
+  Schema(All({"a": str}, inject), extra=PREVENT_EXTRA)({"a": "x"})
+  # {'a': 'x', 'injected': 'not validated'}
+  ```
+
+  probatio does not sandbox validators and does not sandbox carriers. A schema's
+  output is what its validators leave behind, and a carrier's author is the schema's
+  author. Hardening the carry against a class written to sabotage its own validation
+  would buy nothing that the front door does not already give away, and the checks
+  needed to do it properly have no natural end (a property, then `__setattr__`, then
+  `__getattribute__`, then a metaclass). The boundary is stated here so it does not
+  have to be rediscovered one review at a time.
+
 - **A property is not a carrier.** An earlier revision let a type expose a property
   of that name over fields it already had, as a way to opt in without touching the
-  loader. It is rejected now: probatio will not write through a setter, so such a
-  type carried nothing, and the form had three problems of its own (it silently
-  dropped any key its fields could not hold, it cost several times a slot read, and
-  nothing could detect either). The protocol is a plain data attribute, and
-  `supports_annotations` reports exactly that.
+  loader. It is rejected now, and the reasons are ordinary ones rather than
+  adversarial: such a property silently drops any key the fields behind it cannot
+  hold, it costs several times a slot read on every rebuilt value, and `Object`
+  validates the very attributes such a property tends to be built over, so a setter
+  writing them back undoes the coercion that just ran. That last one was a real
+  accident waiting to happen, not a contrived one, because the Home Assistant recipe
+  recommended exactly that shape. The protocol is a plain data attribute, the check
+  is what makes that true rather than aspirational, and `supports_annotations`
+  reports it. It is computed once per type and cached; recomputing per carry costs
+  264 ns against a 10 ns lookup.
 - **`Annotations` is not optimized for the small case, yet.** One holding two keys
   costs about 264 bytes: the object, its `MappingProxyType`, and the backing dict.
   A consumer allocating one per config node would feel that, and a packed
