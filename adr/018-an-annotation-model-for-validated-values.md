@@ -28,7 +28,7 @@ Three ways to close it were considered.
    heals Home Assistant with no change in `annotatedyaml` at all.
 2. **Let the type supply a copier.** An opt-in dunder on the input's class that
    probatio calls with the source and the destination.
-3. **Define what the metadata *is*.** Give probatio a model of the thing being
+3. **Define what the metadata _is_.** Give probatio a model of the thing being
    preserved, a single documented place values carry it, and an API validators use
    to read and add to it.
 
@@ -53,7 +53,7 @@ Three ways to close it were considered.
   and probatio has no way to tell the ones that should be shared from the ones that
   should not. A defined, narrow concept can be reasoned about; "the instance's
   state" cannot. It is also why option 1 has to stop at `Object`, where reapplying
-  raw state would put the *unvalidated* attributes back over the validated ones.
+  raw state would put the _unvalidated_ attributes back over the validated ones.
   Annotations have no such hazard, so the rule generalizes to every rebuild site,
   and "probatio rebuilt your value, so it kept your annotations" is a sentence that
   holds everywhere without an exception list.
@@ -82,10 +82,13 @@ Three ways to close it were considered.
   `class Node(dict, Mixin)` with a non-empty `__slots__` on the mixin is a layout
   conflict, so anything probatio shipped as a base class would not work for the
   `dict` and `list` subclasses this exists to serve.
-- **Immutability makes sharing safe.** The rebuilt value gets the *same*
+- **Immutability makes sharing safe.** The rebuilt value gets the _same_
   `Annotations` object rather than a copy, which is what keeps the carry to two
   attribute operations. That is only sound because nothing can change it through
-  either reference.
+  either reference, so the guarantee is enforced rather than left to convention:
+  the contents are copied into a dict no one else holds and reached only through a
+  `MappingProxyType`. The one cost is that the proxy cannot be pickled, so
+  `Annotations` reduces through its own constructor.
 
 **Consequences**: Six additive public names (`ANNOTATIONS_ATTR`, `Annotations`,
 `annotate`, `annotations_of`, `carry_annotations`, `supports_annotations`) and no

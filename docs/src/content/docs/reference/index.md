@@ -463,7 +463,7 @@ performs (see the [annotations guide](/guides/annotations/)):
 - `annotate(value, annotations=None, /, **extra)`: merge annotations into the value's own and return the value. A value that cannot hold them is returned unchanged.
 - `annotations_of(value)`: the value's annotations as an `Annotations`, or `None` when it has none. A value holding something that is not a mapping raises `TypeError`.
 - `carry_annotations(source, target)`: move `source`'s annotations onto `target` and return `target`, for a validator that builds a new container itself. It replaces rather than merges.
-- `supports_annotations(value)`: whether annotations attached to the value would stick.
+- `supports_annotations(value)`: whether annotations attached to the value would stick. It asks whether the value can be written to, so a property with no setter reports `False`.
 
 ## Compile policy
 

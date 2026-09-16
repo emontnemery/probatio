@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -85,6 +87,26 @@ class ReadOnlyCarrier(dict):
     def __probatio_annotations__(self) -> Annotations:
         """Return the fixed annotations this type was built with."""
         return Annotations(fixed=True)
+
+
+class WritableCarrier(dict):
+    """A dict subclass exposing its annotations through a settable property.
+
+    The third of the three ways a type opts in: it keeps the metadata under its own
+    names and puts a property of the protocol's name over them.
+    """
+
+    __slots__ = ("_where",)
+
+    @property
+    def __probatio_annotations__(self) -> Annotations | None:
+        """Return the annotations assembled from this type's own fields."""
+        return getattr(self, "_where", None)
+
+    @__probatio_annotations__.setter
+    def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+        """Store the annotations in this type's own field."""
+        self._where = value
 
 
 class ForeignMapping(Mapping):
@@ -224,6 +246,27 @@ def test_annotations_copy_the_source_mapping() -> None:
     assert annotations == {"file": "app.yaml"}
 
 
+def test_annotations_cannot_be_mutated_through_their_storage() -> None:
+    """The backing mapping is read-only, so the immutability is enforced not advised."""
+    annotations = Annotations(SOURCE)
+    with pytest.raises(TypeError):
+        annotations._data["file"] = "other.yaml"  # type: ignore[index]
+    assert annotations == SOURCE
+
+
+def test_annotations_survive_a_pickle_round_trip() -> None:
+    """Pickling rebuilds an equal Annotations, despite the read-only backing store."""
+    annotations = Annotations(SOURCE)
+    assert pickle.loads(pickle.dumps(annotations)) == SOURCE  # noqa: S301
+
+
+@pytest.mark.parametrize("clone", [copy.copy, copy.deepcopy])
+def test_annotations_survive_a_copy(clone: Any) -> None:
+    """Copying and deep-copying both rebuild an equal Annotations."""
+    annotations = Annotations(SOURCE)
+    assert clone(annotations) == SOURCE
+
+
 def test_annotations_read_by_key() -> None:
     """A key reads back the value annotated under it."""
     assert Annotations(SOURCE)["file"] == "app.yaml"
@@ -325,9 +368,20 @@ def test_supports_annotations_for_a_plain_dict_class() -> None:
     assert supports_annotations(DictPoint()) is True
 
 
-def test_supports_annotations_for_a_property_carrier() -> None:
-    """A type exposing a property of that name can hold annotations."""
-    assert supports_annotations(ReadOnlyCarrier()) is True
+def test_supports_annotations_for_a_settable_property_carrier() -> None:
+    """A type exposing a settable property of that name can hold annotations."""
+    assert supports_annotations(WritableCarrier()) is True
+
+
+def test_supports_annotations_is_false_for_a_read_only_property() -> None:
+    """A property with no setter can be read but never written, so it reports False."""
+    assert supports_annotations(ReadOnlyCarrier()) is False
+
+
+def test_supports_annotations_is_false_for_a_class_object() -> None:
+    """A class exposes a read-only __dict__ proxy, so it is not a carrier."""
+    assert supports_annotations(dict) is False
+    assert supports_annotations(AnnotatedDict) is False
 
 
 @pytest.mark.parametrize("value", [{}, [], "text", 1, ()])
@@ -558,6 +612,14 @@ def test_exact_sequence_keeps_list_annotations() -> None:
     result = Schema(ExactSequence([str, int]))(annotated_list(["x", 1]))
     assert result == ["x", 1]
     assert_carried(result, AnnotatedList)
+
+
+def test_exact_sequence_returns_a_plain_list_unwrapped() -> None:
+    """A plain list stays a plain list through ExactSequence, with no carry attempted."""
+    result = Schema(ExactSequence([str, int]))(["x", 1])
+    assert type(result) is list
+    assert result == ["x", 1]
+    assert annotations_of(result) is None
 
 
 def test_exact_sequence_keeps_tuple_annotations() -> None:

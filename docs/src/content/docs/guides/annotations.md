@@ -77,7 +77,8 @@ where["line"]  # 12
 The immutability is load-bearing. Probatio hands the _same_ `Annotations` object
 to a rebuilt container rather than copying it, which is what keeps the carry
 cheap. That is only safe because nothing can change it afterwards through either
-reference.
+reference, so the guarantee is enforced rather than advised: the keys and values
+are copied into a mapping no one else holds, reachable only read-only.
 
 A value carries its annotations in one attribute, `__probatio_annotations__`,
 also exported as `ANNOTATIONS_ATTR`. That attribute is the whole protocol: no
@@ -151,8 +152,9 @@ validated.config_file  # 'configuration.yaml'
 
 A property keeps only what the fields behind it can hold. The one above stores a
 `file` and a `line`, so an annotation under any other key is read back as
-absent. A read-only property works too: the attribute is there to be read, and a
-write to it is swallowed rather than raised.
+absent. The property needs a setter: a getter alone lets a value be read but
+never written, so nothing is carried onto a rebuilt container and
+`supports_annotations` reports `False` for it.
 
 :::note[Why there is no mixin to inherit]
 A base class would be the obvious convenience, and it is not offered on purpose.
@@ -259,6 +261,10 @@ supports_annotations(Node())  # True
 supports_annotations({})  # False
 supports_annotations("kitchen")  # False
 ```
+
+It reports whether the value can be _written_ to, not merely read from, so a
+property with no setter reports `False`. The one thing it cannot see through is a
+`__setattr__` that rejects the write itself, which is only knowable by trying.
 
 `carry_annotations` is for a validator that builds a new container itself.
 Probatio carries annotations across the rebuilds it performs, but a

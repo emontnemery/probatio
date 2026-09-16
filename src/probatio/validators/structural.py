@@ -101,6 +101,12 @@ class ExactSequence(_SafeValidator):
         # ``__init__``/``__new__``) cannot be rebuilt that way, so fall back to the
         # plain base type rather than leak the TypeError its constructor raises.
         out_type = type(value)
+        if out_type is list:
+            # A plain list is the common case, and ``result`` is already a fresh list
+            # of the validated items: return it rather than copy it into another one.
+            # It also holds no annotations and can be given none, so it skips the
+            # carry entirely, the same as the sequence engine.
+            return result
         # Annotated because the two branches below build different types (a
         # namedtuple and a plain sequence subclass), which is the point.
         rebuilt: typing.Any

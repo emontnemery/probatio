@@ -45,6 +45,7 @@ was handed; ``supports_annotations`` answers the question for a caller that care
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from typing import Any
 
 # The one attribute a value carries its annotations in. The name is namespaced to
@@ -75,6 +76,10 @@ class Annotations(Mapping[str, Any]):
     a rebuilt container rather than copying it, which is what keeps the carry cheap;
     that is only safe because nothing can change it afterwards through either
     reference. Add to a set of annotations with ``merge``, which returns a new one.
+
+    The immutability is enforced, not a convention: the keys and values are copied
+    into a dict no one else holds, and that dict is reached only through a
+    ``MappingProxyType``, so there is no route back to a mutable view of it.
     """
 
     __slots__ = ("_data",)
@@ -93,7 +98,18 @@ class Annotations(Mapping[str, Any]):
         data: dict[str, Any] = dict(annotations) if annotations is not None else {}
         if extra:
             data.update(extra)
-        self._data = data
+        # The proxy wraps a dict that leaves this frame unreferenced, so the only
+        # way to the contents is read-only, through the proxy.
+        self._data: Mapping[str, Any] = MappingProxyType(data)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Rebuild through the constructor, since a ``MappingProxyType`` cannot pickle.
+
+        The default slot-based reduction would try to pickle the proxy itself and
+        fail. Handing the constructor a plain dict of the contents round-trips to an
+        equal ``Annotations``, and makes ``copy`` and ``deepcopy`` work too.
+        """
+        return (type(self), (dict(self._data),))
 
     def __getitem__(self, key: str) -> Any:
         """Return the value annotated under ``key``."""
@@ -109,7 +125,9 @@ class Annotations(Mapping[str, Any]):
 
     def __repr__(self) -> str:
         """Render as ``Annotations({...})``, showing the annotations themselves."""
-        return f"{type(self).__name__}({self._data!r})"
+        # ``dict(...)``, not the proxy's own repr, which would spell the storage
+        # (``mappingproxy({...})``) rather than the annotations.
+        return f"{type(self).__name__}({dict(self._data)!r})"
 
     def merge(
         self,
@@ -134,20 +152,27 @@ class Annotations(Mapping[str, Any]):
 def supports_annotations(value: Any) -> bool:
     """Report whether annotations attached to ``value`` would stick.
 
-    True when the value's type makes room for the annotation attribute: it declares
-    it in ``__slots__``, exposes a property of that name, or gives its instances an
-    ordinary ``__dict__``. A plain ``dict``, ``list``, ``str`` or ``int`` does none
-    of those, so annotating one is a no-op and this returns False.
+    True when the value can be *written* to, not merely read from: its type declares
+    the attribute in ``__slots__``, exposes a settable property (or another data
+    descriptor) of that name, or gives its instances an ordinary ``__dict__``. A
+    plain ``dict``, ``list``, ``str`` or ``int`` does none of those, so annotating
+    one is a no-op and this returns False. So is a property with no setter, which can
+    be read but never carries anything across a rebuild.
 
-    Two cases report True where a write would still fail, both harmlessly, since
-    ``annotate`` and ``carry_annotations`` swallow the failure: a read-only property
-    of that name, and a built-in type passed as the value (every class has a
-    ``__dict__``, but a built-in one refuses new attributes). This answers for
-    ordinary values, which is what a validator has in its hands.
+    The one thing it cannot see through is a ``__setattr__`` that rejects the write
+    itself, which is only knowable by trying. A class object also reports False: its
+    ``__dict__`` is a read-only proxy, and probatio is asked about values.
     """
-    if hasattr(type(value), ANNOTATIONS_ATTR):
+    descriptor = getattr(type(value), ANNOTATIONS_ATTR, None)
+    if isinstance(descriptor, property):
+        return descriptor.fset is not None
+    if descriptor is not None and hasattr(type(descriptor), "__set__"):
+        # A slot's member descriptor, or any other data descriptor, accepts a write.
         return True
-    return getattr(value, "__dict__", None) is not None
+    # Nothing on the class takes the write, so it can only land in an instance
+    # ``__dict__``. A class object's ``__dict__`` is a mappingproxy, not a dict, so
+    # this is also what keeps a built-in type from reporting True.
+    return isinstance(getattr(value, "__dict__", None), dict)
 
 
 def annotations_of(value: Any) -> Annotations | None:
