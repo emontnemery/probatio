@@ -698,12 +698,17 @@ class _ObjectValidator:
         }
 
         validated = self._mapping(attributes)
-        # The constructor runs with the validated attributes, so the new object is
-        # built rather than filled. Its annotations still come from the original:
-        # they are metadata about where the value came from, which the rebuild does
-        # not change, and they were kept out of ``attributes`` above so the
-        # constructor never sees them as a field.
-        return carry_annotations(data, type(data)(**validated))
+        # The one rebuild site that does not carry annotations. Here the object is
+        # *constructed* from the validated attributes rather than filled, so every
+        # piece of validated state is an attribute. Writing the annotation attribute
+        # afterwards can run user code (a property setter, a custom descriptor), and
+        # that code is free to write other attributes: a carrier exposing its
+        # annotations as a property over fields this schema also validates would have
+        # the original, unvalidated values put straight back over the validated ones.
+        # A container rebuild has no such exposure, because its items are not
+        # attributes. Annotations on an object survive by being attributes the schema
+        # itself carries, not by being reapplied behind it.
+        return type(data)(**validated)
 
 
 class _SequenceValidator:

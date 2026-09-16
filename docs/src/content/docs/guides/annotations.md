@@ -118,7 +118,7 @@ annotations_of(annotate(Node(), line=2))["line"]  # 2
 
 A type that already stores the metadata under names of its own can expose a
 property of that name over the fields it has, which means no change to how the
-data is stored:
+data is stored. Reach for this one last, for the reasons below it:
 
 ```python
 from probatio import Annotations, Schema
@@ -150,11 +150,21 @@ validated.line  # 12
 validated.config_file  # 'configuration.yaml'
 ```
 
-A property keeps only what the fields behind it can hold. The one above stores a
-`file` and a `line`, so an annotation under any other key is read back as
-absent. The property needs a setter: a getter alone lets a value be read but
-never written, so nothing is carried onto a rebuilt container and
-`supports_annotations` reports `False` for it.
+A property carrier has three costs a slot does not, so prefer a slot unless you
+cannot add one:
+
+- **It keeps only what the fields behind it can hold.** The one above stores a
+  `file` and a `line`, so `annotate(node, findings=[...])` is accepted, raises
+  nothing, and the key is gone on the next read. `supports_annotations` reports
+  `True` and is right to: the write did take. Nothing can report the loss, because
+  whether a carrier keeps what it was given is only visible by reading it back.
+- **It is several times slower.** The getter builds a fresh `Annotations` on every
+  read, once per rebuilt container. Measured below.
+- **`Object` will not carry it.** See the exception in the next section.
+
+The property also needs a setter: a getter alone lets a value be read but never
+written, so nothing is carried onto a rebuilt container and `supports_annotations`
+reports `False` for it.
 
 :::note[Why there is no mixin to inherit]
 A base class would be the obvious convenience, and it is not offered on purpose.
@@ -165,13 +175,22 @@ layout conflict, so a shipped base class would fail for exactly the `dict` and
 
 ## Where Probatio carries them
 
-Every place Probatio rebuilds a value moves the original's annotations onto the
-rebuilt one:
+Every place Probatio rebuilds a _container_ moves the original's annotations onto
+the rebuilt one:
 
 - a `dict` subclass rebuilt by a mapping schema,
 - a `list`, `tuple`, or `set` subclass rebuilt by a sequence schema,
-- `ExactSequence`,
-- `Object`.
+- `ExactSequence`.
+
+`Object` is the exception, and deliberately so. It does not rebuild a container,
+it constructs a new object out of the validated attributes, which means every
+piece of validated state is an attribute. Writing the annotation attribute
+afterwards can run a property setter, and that setter is free to write other
+attributes: a carrier exposing its annotations over fields the same schema
+validates would have the original, unvalidated values put back over the validated
+ones. A container has no such exposure, because its items are not attributes. So
+`Object` carries nothing, and an object's metadata survives by being attributes
+the schema itself validates.
 
 Nesting works at any depth, because each level is carried as it is rebuilt:
 
@@ -428,14 +447,27 @@ pointer does not have it silently duplicated onto a new object.
 
 ## What it costs
 
-The carry is one attribute read and one attribute write. Measured on CPython
-3.14, `carry_annotations` costs 40 ns per rebuilt container when there are
-annotations to move, and 26 ns when there are none.
+The carry is one attribute read and one attribute write, once per rebuilt
+container. A plain `dict` or `list` never reaches it at all: those paths return
+the container they built without a carry.
 
-A plain `dict` or `list` never reaches it: those paths return the container they
-built without a carry. On a 1500-entry nested config (1502 rebuilt containers),
-a `dict` or `list` subclass that does not opt in costs about 22 ns per
-container, and one that does costs about 49 ns, which is roughly 0.07 ms for the
+Measured on CPython 3.14, per call to `carry_annotations`:
+
+- a subclass that does not opt in: **24 ns**, the cheap kind of miss, since the
+  type defines no such attribute,
+- a slot carrier with the annotations set: **42 ns**,
+- a slot carrier declared but _not_ set on this value: **99 ns**, because the slot
+  descriptor exists and raises on the read,
+- a property carrier: **328 ns**, because the getter builds an `Annotations` every
+  time.
+
+The third of those is worth designing around: if a loader declares the slot on
+every node but sets it on only some, the unset ones are the expensive case, not
+the cheap one. Have the loader set the attribute unconditionally.
+
+In aggregate, on a 1500-entry nested config (1502 rebuilt containers), a `dict`
+or `list` subclass that does not opt in costs about 22 ns per container, and a
+slot carrier with its annotations set costs about 49 ns, roughly 0.07 ms for the
 whole document.
 
 ## Where to next

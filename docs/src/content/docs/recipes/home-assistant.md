@@ -77,8 +77,8 @@ option was written.
 Probatio's [annotations](/guides/annotations/) close that. A node class says
 where its metadata lives, and every rebuild carries it, at every nesting depth.
 
-The smallest form is one slot on the node class, with the loader writing what it
-knows:
+The opt-in is one slot on the node class, and the loader writing what it knows
+into the annotations:
 
 ```python
 from probatio import Schema, annotate, annotations_of
@@ -88,7 +88,12 @@ class NodeDictClass(dict):
     __slots__ = ("__probatio_annotations__",)
 
 
-node = annotate(NodeDictClass({"name": "kitchen"}), file="configuration.yaml", line=12)
+# What the loader does once per node, where it already records the location.
+node = annotate(
+    NodeDictClass({"name": "kitchen"}),
+    file="configuration.yaml",
+    line=12,
+)
 
 validated = Schema({"name": str})(node)
 
@@ -96,43 +101,38 @@ annotations_of(validated)["line"]  # 12
 annotations_of(validated)["file"]  # 'configuration.yaml'
 ```
 
-A node class that already stores the file and the line under names of its own
-can expose a property over them instead. That form needs no change to how the
-data is stored, or to the loader that writes it:
+That is the whole change on the `annotatedyaml` side: one slot, and one
+`annotate` call where `__config_file__` and `__line__` are set today. Note that
+it puts the location _into_ the annotations. Adding the slot alone does not help,
+because `__config_file__` and `__line__` are separate slots and Probatio carries
+only the one attribute it knows about.
 
-```python
-from probatio import Annotations, Schema
+### The readers have to move with it
 
+The location now lives in the annotations, so the code that reads it back has to
+read it from there. In Home Assistant that is four places:
 
-class NodeDictClass(dict):
-    __slots__ = ("__config_file__", "__line__")
+- `homeassistant/config.py`, `find_annotation`
+- `homeassistant/scripts/check_config.py`
+- `homeassistant/helpers/config_validation.py`, `cv.deprecated`
+- `homeassistant/components/mqtt/entity.py`
 
-    @property
-    def __probatio_annotations__(self):
-        return Annotations(
-            file=getattr(self, "__config_file__", None),
-            line=getattr(self, "__line__", None),
-        )
+Each reads `__config_file__` and `__line__` off the node today, and each becomes
+an `annotations_of(value)` lookup. A node class can keep the two old slots
+populated during a transition, but a value that has been through a schema will
+only have the annotations, so the readers are what makes `cv.deprecated` say
+"near configuration.yaml:12" again.
 
-    @__probatio_annotations__.setter
-    def __probatio_annotations__(self, annotations):
-        self.__config_file__ = annotations.get("file")
-        self.__line__ = annotations.get("line")
+A property over the existing `__config_file__` and `__line__` fields is possible,
+and it is tempting because it leaves the loader and all four readers alone. It is
+not the recommended path: such a property silently drops any annotation key that
+is not `file` or `line`, it costs several times a slot read on every rebuilt
+container, and `Object` will not carry it. The
+[annotations guide](/guides/annotations/) has the details.
 
-
-node = NodeDictClass({"name": "kitchen"})
-node.__config_file__ = "configuration.yaml"
-node.__line__ = 12
-
-validated = Schema({"name": str})(node)
-
-validated.__line__  # 12
-validated.__config_file__  # 'configuration.yaml'
-```
-
-Either way the opt-in lives in the node class, not in the schemas. Nothing in
-`config_validation` changes, and a schema that never sees an annotated value
-behaves exactly as it did before.
+The opt-in lives in the node class, not in the schemas. Nothing in
+`config_validation` changes to make the carry happen, and a schema that never
+sees an annotated value behaves exactly as it did before.
 
 This covers the metadata half of the problem, and only that half. A validator
 that returns `dict(value)`, a comprehension, or an accumulator hands back a

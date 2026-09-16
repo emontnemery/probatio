@@ -21,14 +21,21 @@ This module is probatio's answer: a small, explicit model of that metadata.
       class Node(dict):
           __slots__ = ("__probatio_annotations__",)
 
-  A type with an ordinary ``__dict__`` needs no declaration at all, and a type that
-  already keeps the metadata elsewhere can expose a property of that name over it.
-  probatio only ever reads and writes the attribute, so any of the three works.
-  A ``tuple`` or ``bytes`` subclass cannot take the first form at all (CPython
-  refuses a non-empty ``__slots__`` on one), so it opts in by declaring no
-  ``__slots__`` and using the ``__dict__`` it gets instead.
-- Wherever probatio rebuilds a container, it carries the annotations across. The
+  A type with an ordinary ``__dict__`` needs no declaration at all. A ``tuple`` or
+  ``bytes`` subclass cannot take the slot form (CPython refuses a non-empty
+  ``__slots__`` on one), so it opts in by declaring no ``__slots__`` and using the
+  ``__dict__`` it gets instead.
+
+  A type that already keeps the metadata under names of its own *can* expose a
+  property of that name over them, since probatio only ever reads and writes the
+  attribute. That form is a poor default and the docs do not lead with it: a
+  property over fixed fields silently drops any key it does not know, it costs
+  several times a slot read on every rebuilt container, and it is the shape that
+  makes ``Object`` unable to carry (see ``_ObjectValidator``). Prefer the slot.
+- Wherever probatio rebuilds a *container*, it carries the annotations across. The
   rebuilt value is the original in contents *and* in what it was annotated with.
+  ``Object`` is the exception: it constructs from validated attributes rather than
+  filling a container, so it carries nothing.
 - A validator adds to them with ``annotate``, or moves them onto a value it built
   itself with ``carry_annotations``.
 
@@ -160,8 +167,16 @@ def supports_annotations(value: Any) -> bool:
     be read but never carries anything across a rebuild.
 
     The one thing it cannot see through is a ``__setattr__`` that rejects the write
-    itself, which is only knowable by trying. A class object also reports False: its
+    itself, which is only knowable by trying. A frozen dataclass is the case worth
+    naming: it has a ``__dict__``, so this reports True, and its ``__setattr__``
+    raises ``FrozenInstanceError``, which subclasses ``AttributeError`` and is
+    therefore swallowed like any other refusal. A class object reports False: its
     ``__dict__`` is a read-only proxy, and probatio is asked about values.
+
+    Nor can it see whether a carrier keeps what it is given. A property over two
+    named fields accepts the write and stores only those two, so it reports True and
+    is right to, while an annotation under any other key is dropped. Only reading
+    back with ``annotations_of`` shows that.
     """
     descriptor = getattr(type(value), ANNOTATIONS_ATTR, None)
     if isinstance(descriptor, property):

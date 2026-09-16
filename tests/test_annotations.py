@@ -743,18 +743,45 @@ def test_a_validator_that_rebuilds_without_carrying_loses_the_annotations() -> N
     assert annotations_of(result) is None
 
 
-def test_object_keeps_the_annotations_of_a_slotted_carrier() -> None:
-    """An annotated slotted object keeps its annotations on the rebuilt instance."""
-    result = Schema(Object({"x": int, "y": int}))(annotate(SlottedPoint(1, 2), SOURCE))
-    assert result == SlottedPoint(1, 2)
-    assert_carried(result, SlottedPoint)
+@pytest.mark.parametrize("carrier", [SlottedPoint, DictPoint])
+def test_object_does_not_carry_annotations(carrier: type) -> None:
+    """Object constructs rather than rebuilds, so it is the one site that never carries."""
+    result = Schema(Object({"x": int, "y": int}))(annotate(carrier(1, 2), SOURCE))
+    assert result == carrier(1, 2)
+    assert annotations_of(result) is None
 
 
-def test_object_keeps_the_annotations_of_a_dict_based_carrier() -> None:
-    """An object holding its annotations in __dict__ keeps them on the rebuilt one."""
-    result = Schema(Object({"x": int, "y": int}))(annotate(DictPoint(1, 2), SOURCE))
-    assert result == DictPoint(1, 2)
-    assert_carried(result, DictPoint)
+def test_object_does_not_undo_validation_through_a_property_carrier() -> None:
+    """A property over validated fields cannot put the unvalidated values back."""
+
+    class Located:
+        """An object exposing its annotations over two fields the schema validates."""
+
+        __slots__ = ("file", "line")
+
+        def __init__(self, file: str, line: int) -> None:
+            """Store the source location this object came from."""
+            self.file = file
+            self.line = line
+
+        @property
+        def __probatio_annotations__(self) -> Annotations:
+            """Return the location as annotations, reading the two fields."""
+            return Annotations(file=self.file, line=self.line)
+
+        @__probatio_annotations__.setter
+        def __probatio_annotations__(self, annotations: Mapping[str, Any]) -> None:
+            """Write the location back into the two fields."""
+            self.file = annotations["file"]
+            self.line = annotations["line"]
+
+    # ``line`` arrives as a string and the schema coerces it. Carrying the property
+    # afterwards would write the original "5" back over the validated 5.
+    result = Schema(Object({"file": str, "line": Coerce(int)}))(
+        Located("app.yaml", "5")
+    )
+    assert result.line == 5
+    assert result.file == "app.yaml"
 
 
 @pytest.mark.parametrize("carrier", [SlottedPoint, DictPoint])

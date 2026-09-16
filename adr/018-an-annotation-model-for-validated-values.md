@@ -36,12 +36,13 @@ Three ways to close it were considered.
 
 - `Annotations`, an immutable mapping of `str` to anything, is what a value carries.
 - A value carries it in one attribute, `__probatio_annotations__`, also exported as
-  `ANNOTATIONS_ATTR`. A `__slots__` type opts in with one line, a type with an
-  ordinary `__dict__` needs no declaration, and a type that already keeps the
-  metadata elsewhere can expose a property of that name over it. probatio only ever
-  reads and writes the attribute, so all three work.
-- Every site where probatio rebuilds a value carries the annotations across: the
-  mapping engine, the sequence engine, `ExactSequence`, and `Object`.
+  `ANNOTATIONS_ATTR`. A `__slots__` type opts in with one line, and a type with an
+  ordinary `__dict__` needs no declaration. probatio only ever reads and writes the
+  attribute, so a type that cannot add a slot can also put a property of that name
+  over fields it already has, with the caveats below.
+- Every site where probatio rebuilds a _container_ carries the annotations across:
+  the mapping engine, the sequence engine, and `ExactSequence`. `Object` does not,
+  because it constructs from validated attributes rather than filling a container.
 - Validators read with `annotations_of`, add with `annotate`, and move annotations
   onto a value they built themselves with `carry_annotations`.
 
@@ -54,9 +55,13 @@ Three ways to close it were considered.
   should not. A defined, narrow concept can be reasoned about; "the instance's
   state" cannot. It is also why option 1 has to stop at `Object`, where reapplying
   raw state would put the _unvalidated_ attributes back over the validated ones.
-  Annotations have no such hazard, so the rule generalizes to every rebuild site,
-  and "probatio rebuilt your value, so it kept your annotations" is a sentence that
-  holds everywhere without an exception list.
+  Annotations mostly avoid that hazard, and where they do not the boundary is
+  principled rather than arbitrary: a container's items are not attributes, so
+  nothing written afterwards can reach them, while an object built by `Object` is
+  entirely attributes, so a carrier whose annotations are a property over validated
+  fields would have its unvalidated values restored over them. `Object` therefore
+  does not carry. The rule is "probatio rebuilt your container, so it kept your
+  annotations", with one exception that follows from what an attribute is.
 - **A model lets validators participate.** This is what neither of the other options
   offers. Options 1 and 2 preserve what was already there; they give a validator no
   way to say anything. With a model there is an obvious answer: `annotate` merges
@@ -67,8 +72,10 @@ Three ways to close it were considered.
   `All(annotator, schema)` both end with the loader's annotations and the
   validator's own.
 - **It is the cheapest of the three.** One attribute read and one attribute write.
-  Measured on CPython 3.14, `carry_annotations` costs 40 ns per rebuilt container
-  when annotations are present and 26 ns when there are none. Reading the full
+  Measured on CPython 3.14, `carry_annotations` costs 42 ns per rebuilt container
+  for a slot carrier with its annotations set, 24 ns for a subclass that never opted
+  in, 99 ns for a slot declared but left unset on that value (the descriptor exists
+  and raises on the read), and 328 ns for a property carrier. Reading the full
   default state through `object.__getstate__` is several times that, and allocates a
   state tuple and a dict to report it. On a 1500-entry nested config (1502
   containers) against the same code without the carry: a plain `dict` or `list`
@@ -96,8 +103,11 @@ change to any existing signature. Points to fix in the design and the docs:
 
 - **Opt-in.** A type that makes no room for the attribute carries nothing, and the
   common case (a plain `dict` in, a plain `dict` out) is untouched. Home Assistant
-  gets the fix when `annotatedyaml` adds the slot, or exposes a property over the
-  `__config_file__` and `__line__` it already has.
+  gets the fix when `annotatedyaml` adds the slot and its loader writes the file and
+  line _into_ the annotations. Adding the slot alone is not enough: `__config_file__`
+  and `__line__` are separate slots that probatio does not know about and does not
+  carry. The four places in Home Assistant that read those two slots move to
+  `annotations_of` with it.
 - **Values that cannot hold an attribute.** A plain `dict`, a `str`, an `int` cannot
   be annotated. `annotate` and `carry_annotations` return such a value unchanged
   rather than raise, so a validator can call them without knowing what it was handed;
@@ -108,9 +118,19 @@ change to any existing signature. Points to fix in the design and the docs:
   constructor. The rebuilt value stands in for the original, so the original's
   annotations are the right ones. A source carrying none leaves the new instance's
   own alone.
-- **`Object` does not see the attribute.** `_iterate_object` skips it, so an
-  annotated object's metadata is never offered to the attribute schema as a field
-  (where `PREVENT_EXTRA` would reject it) and an unset slot is never read.
+- **`Object` neither sees nor carries the attribute.** `_iterate_object` skips it,
+  so an annotated object's metadata is never offered to the attribute schema as a
+  field (where `PREVENT_EXTRA` would reject it) and an unset slot is never read.
+  Nor is it written back after construction, so an `Object` rebuild loses
+  annotations that are not themselves validated attributes. That is the price of
+  never letting a carrier's own code run over freshly validated state.
+- **A property carrier is the weak form, and the docs say so.** It silently drops
+  any key the fields behind it cannot hold, it costs several times a slot read on
+  every rebuilt container (328 ns against 42 ns), and it is the shape `Object`
+  refuses. It exists for a type that cannot add a slot, not as an equal choice.
+  Nothing can detect the dropping: whether a carrier keeps what it was handed is
+  only visible by reading it back, which is why `supports_annotations` answers the
+  narrower question of whether the write lands at all.
 - **Type destruction is still out of reach.** A validator that returns
   `dict(value)`, a comprehension, or an accumulator produces a plain `dict` or
   `list`, and no engine change can heal that. `carry_annotations` is the fix, applied
