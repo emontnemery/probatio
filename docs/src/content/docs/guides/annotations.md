@@ -1,6 +1,6 @@
 ---
 title: Annotations
-description: Metadata a value carries beside its contents, how a type opts in, and how Probatio keeps it across every container rebuild.
+description: Metadata a value carries beside its contents, how a type opts in, and how Probatio keeps it across a rebuild.
 ---
 
 Some data arrives knowing more about itself than its contents say. A YAML loader
@@ -11,9 +11,9 @@ and it is exactly what a good error message needs.
 
 Validation is hostile to it. A mapping or sequence schema rebuilds its input, so
 whatever the original held beside its items does not come along. Annotations are
-Probatio's answer: a small, defined model for that metadata, carried across
-every container rebuild, and across an `Object` rebuild when doing so is safe.
-(The condition is covered below.)
+Probatio's answer: a small, defined model for that metadata, carried across every
+rebuild that produces the value's own type. (A rebuild that does not keep the type
+cannot keep the annotations either; that and the other edges are covered below.)
 
 ## What validation loses
 

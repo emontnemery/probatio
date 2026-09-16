@@ -12,11 +12,7 @@ from collections import defaultdict
 from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple
 
-from probatio.annotations import (
-    ANNOTATIONS_ATTR,
-    _writes_a_plain_attribute,
-    carry_annotations,
-)
+from probatio.annotations import ANNOTATIONS_ATTR, carry_annotations
 from probatio.error import (
     DictInvalid,
     ExclusiveInvalid,
@@ -703,18 +699,11 @@ class _ObjectValidator:
 
         validated = self._mapping(attributes)
         rebuilt = type(data)(**validated)
-        # The one site that has to ask before carrying. Here the object is
+        # Carried like any other rebuild. ``carry_annotations`` writes only where the
+        # write lands in the attribute itself, which matters most here: the object is
         # *constructed* from the validated attributes rather than filled, so every
-        # piece of validated state is an attribute, and a write that runs the
-        # carrier's own code can reach it: a carrier exposing its annotations as a
-        # property over fields this schema also validates would have the original,
-        # unvalidated values put straight back over the validated ones. So the carry
-        # happens only when the write lands in the attribute itself, which is the
-        # ``__slots__`` and plain ``__dict__`` forms the docs recommend. A container
-        # rebuild never asks, because its items are not attributes at all.
-        if _writes_a_plain_attribute(type(rebuilt)):
-            carry_annotations(data, rebuilt)
-        return rebuilt
+        # piece of validated state is an attribute a carrier's setter could reach.
+        return carry_annotations(data, rebuilt)
 
 
 class _SequenceValidator:

@@ -68,7 +68,7 @@ class AnnotatedTuple(tuple):  # noqa: SLOT001
 
     A tuple subclass cannot declare a non-empty __slots__, and an empty one would
     leave nowhere for the attribute to live, so this relies on the ordinary instance
-    dict, which is the second of the three ways a type opts in.
+    dict, which is the second of the two ways a type opts in.
     """
 
 
@@ -94,8 +94,8 @@ class ReadOnlyCarrier(dict):
 class WritableCarrier(dict):
     """A dict subclass exposing its annotations through a settable property.
 
-    The third of the three ways a type opts in: it keeps the metadata under its own
-    names and puts a property of the protocol's name over them.
+    Not a carrier: probatio will not write through a setter, so this stands for the
+    shape the protocol rejects even though the write would technically land.
     """
 
     __slots__ = ("_where",)
@@ -693,13 +693,82 @@ def test_a_setter_cannot_replace_an_exact_sequence_item() -> None:
 
 
 def test_the_carrier_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-type answer cache clears when it fills, so it cannot grow forever."""
-    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE_LIMIT", 4)
-    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE", {})
+    """The per-type writer cache clears when it fills, so it cannot grow forever."""
+    monkeypatch.setattr(annotations_module, "_WRITERS_LIMIT", 4)
+    monkeypatch.setattr(annotations_module, "_WRITERS", {})
     for index in range(10):
         carrier = type(f"Carrier{index}", (dict,), {"__slots__": (ANNOTATIONS_ATTR,)})
         assert supports_annotations(carrier()) is True
-    assert len(annotations_module._PLAIN_ATTRIBUTE) <= 4
+    assert len(annotations_module._WRITERS) <= 4
+
+
+def test_a_mismatched_cached_writer_degrades_to_a_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached write path that does not fit its type abandons the write, not raises.
+
+    The cache maps a class to the mechanism for writing its annotation attribute. If
+    an entry were ever wrong for the value in hand, the write must fail quietly: a
+    carrier problem is never a validation failure.
+    """
+    foreign = AnnotatedList.__dict__[ANNOTATIONS_ATTR]
+    monkeypatch.setattr(annotations_module, "_WRITERS", {AnnotatedDict: foreign})
+
+    value = AnnotatedDict({"a": "x"})
+    assert annotate(value, SOURCE) is value
+    assert annotations_of(value) is None
+    assert carry_annotations(annotated_dict(), value) is value
+
+
+def test_a_class_that_gains_a_setter_after_caching_cannot_corrupt() -> None:
+    """A carrier cached as safe, then given a hostile setter, still cannot inject.
+
+    The eligibility answer is cached per class, and a class namespace stays mutable,
+    so the cached answer can go stale. It cannot go dangerous: what is cached is the
+    way to write the attribute, not permission to call ``setattr``, so a setter
+    installed later is never the thing that runs.
+    """
+
+    class Mutable(dict):
+        """Starts as an ordinary slot carrier."""
+
+        __slots__ = ("__probatio_annotations__",)
+
+    schema = Schema({"a": str}, extra=PREVENT_EXTRA)
+    first = annotate(Mutable({"a": "x"}), SOURCE)
+    assert_carried(schema(first), Mutable)
+
+    def hostile(self: Any, _value: Any) -> None:
+        """Inject an unvalidated key, the way a real attack would."""
+        self["injected"] = "not validated"
+
+    def quiet(_self: Any) -> None:
+        """Report nothing, so only the setter is interesting."""
+        return
+
+    Mutable.__probatio_annotations__ = property(quiet, hostile)  # type: ignore[assignment]
+
+    result = schema(annotate(Mutable({"a": "x"}), SOURCE))
+    assert "injected" not in result
+
+
+def test_a_hostile_metaclass_cannot_break_the_carry() -> None:
+    """Inspecting the target's class is guarded too, so a raising metaclass is safe."""
+
+    class Hostile(type):
+        """A metaclass that refuses to report its MRO."""
+
+        @property
+        def __mro__(cls) -> Any:
+            """Raise rather than report the MRO."""
+            message = "metaclass blew up"
+            raise RuntimeError(message)
+
+    class Sneaky(list, metaclass=Hostile):
+        """A list subclass whose class cannot be inspected."""
+
+    # The carry gives up rather than leaking the metaclass's exception.
+    assert carry_annotations(annotated_list(), Sneaky([1])) is not None
 
 
 def test_annotations_cannot_have_their_storage_rebound() -> None:

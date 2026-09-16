@@ -274,9 +274,10 @@ carries forward an upstream request.
 - `Annotations`, `ANNOTATIONS_ATTR`, `annotate`, `annotations_of`,
   `carry_annotations`, `supports_annotations`: metadata a value carries beside its
   contents (the file and line a YAML loader recorded, for example), kept across
-  every _container_ rebuild a schema performs, which is every mapping and sequence
-  rebuild and `ExactSequence`, and across an `Object` rebuild when writing the
-  attribute runs none of the carrier's own code. A
+  every rebuild that produces the value's own type, which is every mapping and
+  sequence rebuild, `ExactSequence`, and `Object`. A rebuild that does not keep the
+  type cannot keep the annotations, so a `Mapping` that is not a `dict` subclass
+  validates to a plain `dict` and loses them. A
   type opts in by making room for one attribute,
   `__probatio_annotations__`; a type that does not is untouched, and a plain `dict`
   or `list` never reaches the carry. Validators read with `annotations_of`, add with

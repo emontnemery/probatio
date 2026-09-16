@@ -82,19 +82,18 @@ Three ways to close it were considered.
   transformation. Composition falls out: `All(schema, annotator)` and
   `All(annotator, schema)` both end with the loader's annotations and the
   validator's own.
-- **It is the cheapest of the three.** One attribute read and one attribute write.
-  Measured on CPython 3.14, `carry_annotations` costs 42 ns per rebuilt container
-  for a slot carrier with its annotations set, 24 ns for a subclass that never opted
-  in, 99 ns for a slot declared but left unset on that value (the descriptor exists
-  and raises on the read), and 328 ns for a property carrier. Reading the full
-  default state through `object.__getstate__` is several times that, and allocates a
-  state tuple and a dict to report it. On a 1500-entry nested config (1502
-  containers) against the same code without the carry: a plain `dict` or `list`
-  input is unchanged, because the generated validators take it and never reach the
-  carry at all; a `dict`/`list` subclass that does not opt in costs 22 ns per
-  container; one that does costs 49 ns. Inlining the helper at its four call sites
-  was measured to save 12 ns of that and was rejected, because four copies of the
-  semantics is a worse trade than 3% of the subclass path.
+- **It is the cheapest of the three.** One attribute read and one attribute write,
+  behind one cached lookup of how to perform the write. Measured on CPython 3.14,
+  `carry_annotations` costs 84 ns per rebuilt value for a slot carrier with its
+  annotations set, 43 ns for a subclass that never opted in, 127 ns for a slot
+  declared but left unset on that value (the descriptor exists and raises on the
+  read), and 43 ns for a value it declines to carry onto. Reading the full default
+  state through `object.__getstate__` is several times a plain write, and allocates a
+  state tuple and a dict to report it. On a 1500-entry nested config (1502 rebuilt
+  containers) the carry itself costs 55 ns per container, about 0.08 ms for the
+  document; a plain `dict` or `list` input is unchanged, because the generated
+  validators take it and never reach the carry at all.
+
 - **The attribute is the whole protocol.** No registration, no dunder method, no
   base class to inherit. That matters because a slotted mixin is impossible here:
   `class Node(dict, Mixin)` with a non-empty `__slots__` on the mixin is a layout
@@ -129,22 +128,24 @@ change to any existing signature. Points to fix in the design and the docs:
   constructor. The rebuilt value stands in for the original, so the original's
   annotations are the right ones. A source carrying none leaves the new instance's
   own alone.
-- **`Object` does not see the attribute, and carries it conditionally.**
-  `_iterate_object` skips it, so an annotated object's metadata is never offered to
-  the attribute schema as a field (where `PREVENT_EXTRA` would reject it) and an
-  unset slot is never read. It is written back after construction only when the
-  write runs none of the carrier's own code, so a property carrier loses its
-  annotations through `Object` while the recommended slot and `__dict__` forms keep
-  them. The alternative considered was to drop the carry there for every form; it
-  was rejected because it would cost the recommended forms a capability in order to
-  guard against a hazard only the discouraged one has.
-- **A property carrier is the weak form, and the docs say so.** It silently drops
-  any key the fields behind it cannot hold, it costs several times a slot read on
-  every rebuilt container (328 ns against 42 ns), and it is the shape `Object`
-  refuses. It exists for a type that cannot add a slot, not as an equal choice.
-  Nothing can detect the dropping: whether a carrier keeps what it was handed is
-  only visible by reading it back, which is why `supports_annotations` answers the
-  narrower question of whether the write lands at all.
+- **`Object` does not see the attribute.** `_iterate_object` skips it, so an
+  annotated object's metadata is never offered to the attribute schema as a field
+  (where `PREVENT_EXTRA` would reject it) and an unset slot is never read. It is
+  carried onto the constructed object like any other rebuild, under the same rule.
+- **The carry writes through a captured path, not `setattr`.** What is cached per
+  type is _how_ to write the attribute: the slot's member descriptor, or the instance
+  `__dict__`. A class namespace stays mutable, so a cached answer can go stale, and
+  capturing the mechanism is what keeps stale from meaning dangerous: a property
+  installed after the fact is never the thing that runs, because `setattr` is never
+  what is called. Recomputing per carry was the alternative and costs 264 ns against
+  a 10 ns lookup, five times the carry itself.
+- **A property is not a carrier.** An earlier revision let a type expose a property
+  of that name over fields it already had, as a way to opt in without touching the
+  loader. It is rejected now: probatio will not write through a setter, so such a
+  type carried nothing, and the form had three problems of its own (it silently
+  dropped any key its fields could not hold, it cost several times a slot read, and
+  nothing could detect either). The protocol is a plain data attribute, and
+  `supports_annotations` reports exactly that.
 - **`Annotations` is not optimized for the small case, yet.** One holding two keys
   costs about 264 bytes: the object, its `MappingProxyType`, and the backing dict.
   A consumer allocating one per config node would feel that, and a packed
@@ -154,17 +155,18 @@ change to any existing signature. Points to fix in the design and the docs:
   distinct location rather than one per value, and brings a loader's per-node write
   to 36 ns against 26 ns for two plain slot stores. The representation stays private
   to `annotations.py`, so packing it later changes nothing outside.
-- **A lossy carrier is not detected, deliberately.** A property over fixed fields
-  accepts a write and keeps only the keys it knows, which nothing can report: the
-  write succeeded, and only reading back shows the loss. Verifying inside `annotate`
-  was considered and rejected. `annotate` is what a loader calls once per value, so
-  a read-back on that path taxes exactly the case the docs are steering people
-  towards, to diagnose a form they are steered away from. The docs name the hazard
-  instead, and `annotations_of` is how a caller checks.
-- **`supports_annotations` asks about writing, not reading.** It reports whether a
-  write would land, so a getter-only property is False. An earlier draft asked only
-  whether the attribute was reachable, which reported True for values that silently
-  discarded it. Recorded because the two readings are easy to confuse.
+- **A carrier that keeps less than it is given is not detected.** The write lands in
+  a plain attribute, so probatio knows it succeeded; whether the value holds what it
+  was handed is only visible by reading it back, and `annotations_of` is how a caller
+  checks. Verifying inside `annotate` was considered and rejected: `annotate` is what
+  a loader calls once per value, and a read-back there taxes the common case to
+  diagnose a rare one.
+- **`supports_annotations` asks the question probatio asks itself.** It reports
+  whether the attribute is a plain data attribute, which is the same test the carry
+  performs, so the public helper and the engine cannot disagree. Earlier drafts asked
+  whether the attribute was merely reachable, and then whether a write would land at
+  all; both reported True for values probatio would not in fact carry. Recorded
+  because the readings are easy to confuse.
 - **Type destruction is still out of reach.** A validator that returns
   `dict(value)`, a comprehension, or an accumulator produces a plain `dict` or
   `list`, and no engine change can heal that. `carry_annotations` is the fix, applied
