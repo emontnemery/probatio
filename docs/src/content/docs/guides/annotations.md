@@ -334,9 +334,7 @@ def no_deprecated_options(value):
 
 
 schema = Schema(All({"old_name": str}, no_deprecated_options))
-config = annotate(
-    Node({"old_name": "kitchen"}), file="configuration.yaml", line=12
-)
+config = annotate(Node({"old_name": "kitchen"}), file="configuration.yaml", line=12)
 
 try:
     schema(config)

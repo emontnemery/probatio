@@ -88,9 +88,7 @@ class NodeDictClass(dict):
     __slots__ = ("__probatio_annotations__",)
 
 
-node = annotate(
-    NodeDictClass({"name": "kitchen"}), file="configuration.yaml", line=12
-)
+node = annotate(NodeDictClass({"name": "kitchen"}), file="configuration.yaml", line=12)
 
 validated = Schema({"name": str})(node)
 
