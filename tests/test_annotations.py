@@ -30,6 +30,7 @@ from probatio import (
     supports_annotations,
 )
 from probatio import Any as AnyOf
+from probatio.annotations import ANNOTATIONS_ATTR
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -816,10 +817,64 @@ def test_a_validator_that_rebuilds_without_carrying_loses_the_annotations() -> N
 
 
 @pytest.mark.parametrize("carrier", [SlottedPoint, DictPoint])
-def test_object_does_not_carry_annotations(carrier: type) -> None:
-    """Object constructs rather than rebuilds, so it is the one site that never carries."""
+def test_object_carries_when_the_write_runs_no_user_code(carrier: type) -> None:
+    """A slot or __dict__ carrier keeps its annotations through an Object rebuild."""
     result = Schema(Object({"x": int, "y": int}))(annotate(carrier(1, 2), SOURCE))
     assert result == carrier(1, 2)
+    assert_carried(result, carrier)
+
+
+def test_object_does_not_carry_through_a_property() -> None:
+    """A property setter could rewrite validated attributes, so Object declines it."""
+    writes: list[Any] = []
+
+    class Located:
+        """Keeps its annotations behind a property, recording every write."""
+
+        __slots__ = ("x",)
+
+        def __init__(self, x: Any = None) -> None:
+            """Store the coordinate."""
+            self.x = x
+
+        @property
+        def __probatio_annotations__(self) -> Annotations:
+            """Report a fixed set of annotations."""
+            return Annotations(SOURCE)
+
+        @__probatio_annotations__.setter
+        def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+            """Record that the carry reached this carrier's own code."""
+            writes.append(value)
+
+    result = Schema(Object({"x": int}))(Located(1))
+    assert result.x == 1
+    assert writes == []
+
+
+def test_object_does_not_carry_through_a_custom_setattr() -> None:
+    """An overridden __setattr__ can write anything, so Object declines it too."""
+    writes: list[str] = []
+
+    class Guarded:
+        """Records every attribute write, including the annotation one."""
+
+        __slots__ = ("__probatio_annotations__", "x")
+
+        def __init__(self, x: Any = None) -> None:
+            """Store the coordinate."""
+            self.x = x
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            """Record the write, then perform it."""
+            writes.append(name)
+            object.__setattr__(self, name, value)
+
+    annotated = annotate(Guarded(1), SOURCE)
+    writes.clear()
+    result = Schema(Object({"x": int}))(annotated)
+    assert result.x == 1
+    assert ANNOTATIONS_ATTR not in writes
     assert annotations_of(result) is None
 
 

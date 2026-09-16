@@ -41,8 +41,9 @@ Three ways to close it were considered.
   attribute, so a type that cannot add a slot can also put a property of that name
   over fields it already has, with the caveats below.
 - Every site where probatio rebuilds a _container_ carries the annotations across:
-  the mapping engine, the sequence engine, and `ExactSequence`. `Object` does not,
-  because it constructs from validated attributes rather than filling a container.
+  the mapping engine, the sequence engine, and `ExactSequence`. `Object` carries
+  only when writing the attribute runs none of the carrier's own code, because it
+  constructs from validated attributes rather than filling a container.
 - Validators read with `annotations_of`, add with `annotate`, and move annotations
   onto a value they built themselves with `carry_annotations`.
 
@@ -59,9 +60,12 @@ Three ways to close it were considered.
   principled rather than arbitrary: a container's items are not attributes, so
   nothing written afterwards can reach them, while an object built by `Object` is
   entirely attributes, so a carrier whose annotations are a property over validated
-  fields would have its unvalidated values restored over them. `Object` therefore
-  does not carry. The rule is "probatio rebuilt your container, so it kept your
-  annotations", with one exception that follows from what an attribute is.
+  fields would have its unvalidated values restored over them. The condition is
+  therefore on the _write_, not on the site: `Object` carries when setting the
+  attribute lands in the attribute itself (a `__slots__` member descriptor, a plain
+  instance `__dict__`) and declines when it would run a property, another descriptor
+  the carrier defined, or an overridden `__setattr__`. That is the same distinction
+  `supports_annotations` draws, one step narrower.
 - **A model lets validators participate.** This is what neither of the other options
   offers. Options 1 and 2 preserve what was already there; they give a validator no
   way to say anything. With a model there is an obvious answer: `annotate` merges
@@ -119,12 +123,15 @@ change to any existing signature. Points to fix in the design and the docs:
   constructor. The rebuilt value stands in for the original, so the original's
   annotations are the right ones. A source carrying none leaves the new instance's
   own alone.
-- **`Object` neither sees nor carries the attribute.** `_iterate_object` skips it,
-  so an annotated object's metadata is never offered to the attribute schema as a
-  field (where `PREVENT_EXTRA` would reject it) and an unset slot is never read.
-  Nor is it written back after construction, so an `Object` rebuild loses
-  annotations that are not themselves validated attributes. That is the price of
-  never letting a carrier's own code run over freshly validated state.
+- **`Object` does not see the attribute, and carries it conditionally.**
+  `_iterate_object` skips it, so an annotated object's metadata is never offered to
+  the attribute schema as a field (where `PREVENT_EXTRA` would reject it) and an
+  unset slot is never read. It is written back after construction only when the
+  write runs none of the carrier's own code, so a property carrier loses its
+  annotations through `Object` while the recommended slot and `__dict__` forms keep
+  them. The alternative considered was to drop the carry there for every form; it
+  was rejected because it would cost the recommended forms a capability in order to
+  guard against a hazard only the discouraged one has.
 - **A property carrier is the weak form, and the docs say so.** It silently drops
   any key the fields behind it cannot hold, it costs several times a slot read on
   every rebuilt container (328 ns against 42 ns), and it is the shape `Object`
@@ -132,6 +139,26 @@ change to any existing signature. Points to fix in the design and the docs:
   Nothing can detect the dropping: whether a carrier keeps what it was handed is
   only visible by reading it back, which is why `supports_annotations` answers the
   narrower question of whether the write lands at all.
+- **`Annotations` is not optimized for the small case, yet.** One holding two keys
+  costs about 264 bytes: the object, its `MappingProxyType`, and the backing dict.
+  A consumer allocating one per config node would feel that, and a packed
+  representation for a handful of keys would cut it by roughly half. It is not done
+  here, because immutability already buys the larger win: the same `Annotations` can
+  be shared by every value from the same place, which makes the cost one object per
+  distinct location rather than one per value, and brings a loader's per-node write
+  to 36 ns against 26 ns for two plain slot stores. The representation stays private
+  to `annotations.py`, so packing it later changes nothing outside.
+- **A lossy carrier is not detected, deliberately.** A property over fixed fields
+  accepts a write and keeps only the keys it knows, which nothing can report: the
+  write succeeded, and only reading back shows the loss. Verifying inside `annotate`
+  was considered and rejected. `annotate` is what a loader calls once per value, so
+  a read-back on that path taxes exactly the case the docs are steering people
+  towards, to diagnose a form they are steered away from. The docs name the hazard
+  instead, and `annotations_of` is how a caller checks.
+- **`supports_annotations` asks about writing, not reading.** It reports whether a
+  write would land, so a getter-only property is False. An earlier draft asked only
+  whether the attribute was reachable, which reported True for values that silently
+  discarded it. Recorded because the two readings are easy to confuse.
 - **Type destruction is still out of reach.** A validator that returns
   `dict(value)`, a comprehension, or an accumulator produces a plain `dict` or
   `list`, and no engine change can heal that. `carry_annotations` is the fix, applied

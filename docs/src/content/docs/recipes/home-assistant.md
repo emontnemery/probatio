@@ -102,11 +102,45 @@ annotations_of(validated)["line"]  # 12
 annotations_of(validated)["file"]  # 'configuration.yaml'
 ```
 
-That is the whole change on the `annotatedyaml` side: one slot, and one
-`annotate` call where `__config_file__` and `__line__` are set today. Note that
-it puts the location _into_ the annotations. Adding the slot alone does not help,
-because `__config_file__` and `__line__` are separate slots and Probatio carries
-only the one attribute it knows about.
+That is the whole change on the `annotatedyaml` side: one slot, and one write
+where `__config_file__` and `__line__` are set today. Note that it puts the
+location _into_ the annotations. Adding the slot alone does not help, because
+`__config_file__` and `__line__` are separate slots and Probatio carries only the
+one attribute it knows about.
+
+### Build the annotations once per location
+
+A loader runs this once per node, which makes it the one place the cost is worth
+thinking about. `annotate` reads what is there, merges, and writes, which is the
+right shape for a validator adding to what a value already carries and the wrong
+one for a loader that knows it is writing the first and only annotation. Assign
+the attribute directly instead, and reuse one `Annotations` for every node from
+the same place. Sharing is safe precisely because `Annotations` cannot change:
+
+```python
+from probatio import Annotations
+
+_locations: dict[tuple[str, int], Annotations] = {}
+
+
+def location(file: str, line: int) -> Annotations:
+    """Return one shared Annotations per file and line."""
+    key = (file, line)
+    shared = _locations.get(key)
+    if shared is None:
+        shared = _locations[key] = Annotations(file=file, line=line)
+    return shared
+
+
+node.__probatio_annotations__ = location("configuration.yaml", 12)
+```
+
+Measured on CPython 3.14, per node: `annotate(node, file=..., line=...)` costs
+388 ns, a direct assignment of a fresh `Annotations` 199 ns, and a direct
+assignment of a shared one 36 ns, against 26 ns for the two plain slot stores the
+loader does today. Sharing also decides the memory: an `Annotations` and its
+backing mapping are about 264 bytes, so one per distinct location costs far less
+than one per node.
 
 ### The readers have to move with it
 
@@ -138,8 +172,27 @@ sees an annotated value behaves exactly as it did before.
 This covers the metadata half of the problem, and only that half. A validator
 that returns `dict(value)`, a comprehension, or an accumulator hands back a
 plain `dict`, which is no longer a node class and can hold no attributes at all.
-No engine change reaches that; the fix is `carry_annotations` where such a
-validator is written, as the [annotations guide](/guides/annotations/) shows.
+No engine change reaches that, and neither does `carry_annotations` on its own:
+carrying onto a plain `dict` is a silent no-op, because the target still cannot
+hold the attribute. Such a validator needs both halves, rebuilding as the input's
+own type and then carrying:
+
+```python
+from probatio import carry_annotations
+
+
+# Before: the type is destroyed, so the annotations go with it.
+def strip_empty(value):
+    return {key: item for key, item in value.items() if item}
+
+
+# After: rebuild as the input's own class, then move the annotations across.
+def strip_empty_keeping_source(value):
+    kept = type(value)((key, item) for key, item in value.items() if item)
+    return carry_annotations(value, kept)
+```
+
+The [annotations guide](/guides/annotations/) has the same pattern in full.
 
 ## It is tested against the real thing
 

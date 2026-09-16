@@ -12,8 +12,8 @@ and it is exactly what a good error message needs.
 Validation is hostile to it. A mapping or sequence schema rebuilds its input, so
 whatever the original held beside its items does not come along. Annotations are
 Probatio's answer: a small, defined model for that metadata, carried across
-every container rebuild. (`Object` is the one exception, for a reason covered
-below.)
+every container rebuild, and across an `Object` rebuild when doing so is safe.
+(The condition is covered below.)
 
 ## What validation loses
 
@@ -161,7 +161,7 @@ cannot add one:
   whether a carrier keeps what it was given is only visible by reading it back.
 - **It is several times slower.** The getter builds a fresh `Annotations` on every
   read, once per rebuilt container. Measured below.
-- **`Object` will not carry it.** See the exception in the next section.
+- **`Object` will not carry it.** See the condition in the next section.
 
 The property also needs a setter: a getter alone lets a value be read but never
 written, so nothing is carried onto a rebuilt container and `supports_annotations`
@@ -183,15 +183,18 @@ the rebuilt one:
 - a `list`, `tuple`, or `set` subclass rebuilt by a sequence schema,
 - `ExactSequence`.
 
-`Object` is the exception, and deliberately so. It does not rebuild a container,
-it constructs a new object out of the validated attributes, which means every
-piece of validated state is an attribute. Writing the annotation attribute
-afterwards can run a property setter, and that setter is free to write other
-attributes: a carrier exposing its annotations over fields the same schema
-validates would have the original, unvalidated values put back over the validated
-ones. A container has no such exposure, because its items are not attributes. So
-`Object` carries nothing, and an object's metadata survives by being attributes
-the schema itself validates.
+`Object` also carries, with one condition. It does not rebuild a container, it
+constructs a new object out of the validated attributes, which means every piece
+of validated state is an attribute. Writing the annotation attribute afterwards
+can run a property setter, and that setter is free to write other attributes: a
+carrier exposing its annotations over fields the same schema validates would have
+the original, unvalidated values put back over the validated ones.
+
+So `Object` carries only when the write lands in the attribute itself and runs
+none of the carrier's own code, which is the `__slots__` and plain `__dict__`
+forms. A property carrier, any other descriptor the carrier defined, or a type
+overriding `__setattr__` is skipped. A container rebuild never has to ask,
+because its items are not attributes at all.
 
 Nesting works at any depth, because each level is carried as it is rebuilt:
 

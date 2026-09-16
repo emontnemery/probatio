@@ -30,12 +30,12 @@ This module is probatio's answer: a small, explicit model of that metadata.
   property of that name over them, since probatio only ever reads and writes the
   attribute. That form is a poor default and the docs do not lead with it: a
   property over fixed fields silently drops any key it does not know, it costs
-  several times a slot read on every rebuilt container, and it is the shape that
-  makes ``Object`` unable to carry (see ``_ObjectValidator``). Prefer the slot.
+  several times a slot read on every rebuilt container, and it is the one form
+  ``Object`` declines to carry (see ``_ObjectValidator``). Prefer the slot.
 - Wherever probatio rebuilds a *container*, it carries the annotations across. The
   rebuilt value is the original in contents *and* in what it was annotated with.
-  ``Object`` is the exception: it constructs from validated attributes rather than
-  filling a container, so it carries nothing.
+  ``Object`` carries too, but only when writing the attribute runs none of the
+  carrier's own code, since there the validated state *is* the attributes.
 - A validator adds to them with ``annotate``, or moves them onto a value it built
   itself with ``carry_annotations``.
 
@@ -52,7 +52,7 @@ was handed; ``supports_annotations`` answers the question for a caller that care
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from types import MappingProxyType
+from types import MappingProxyType, MemberDescriptorType
 from typing import Any
 
 # The one attribute a value carries its annotations in. The name is namespaced to
@@ -154,6 +154,31 @@ class Annotations(Mapping[str, Any]):
         if extra:
             merged.update(extra)
         return Annotations(merged)
+
+
+def _writes_without_user_code(value: Any) -> bool:
+    """Report whether setting the annotation attribute on ``value`` runs no user code.
+
+    True for a ``__slots__`` member descriptor and for a plain instance ``__dict__``:
+    the write lands in the attribute itself and can touch nothing else. False for a
+    property or any other descriptor the carrier defined, and for a type that
+    overrides ``__setattr__``, since either is free to write whatever it likes.
+
+    ``_ObjectValidator`` is the one caller. Everywhere else probatio rebuilds a
+    container, whose items are not attributes, so a carrier's own code cannot reach
+    the validated result and this question does not arise.
+    """
+    cls = type(value)
+    # ``__mro__[:-1]`` is every class but ``object``: if one of them defines
+    # ``__setattr__``, the write goes through code the carrier wrote and can land
+    # anywhere. Checked by name rather than by comparing the two functions, which
+    # is the same test without confusing a type checker about bound signatures.
+    if any("__setattr__" in vars(base) for base in cls.__mro__[:-1]):
+        return False
+    descriptor = getattr(cls, ANNOTATIONS_ATTR, None)
+    if descriptor is None:
+        return isinstance(getattr(value, "__dict__", None), dict)
+    return isinstance(descriptor, MemberDescriptorType)
 
 
 def supports_annotations(value: Any) -> bool:
