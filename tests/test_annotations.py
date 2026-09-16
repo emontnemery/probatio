@@ -13,6 +13,7 @@ from probatio import (
     ALLOW_EXTRA,
     PREVENT_EXTRA,
     REMOVE_EXTRA,
+    Alias,
     All,
     Annotations,
     Coerce,
@@ -915,6 +916,17 @@ def test_annotations_survive_at_every_nesting_depth() -> None:
     assert annotations_of(result["inner"]) == {"depth": 2}
     assert annotations_of(result["inner"]["items"]) == {"depth": 3}
     assert type(result["inner"]["items"]) is AnnotatedList
+
+
+@pytest.mark.usefixtures("_compile_policy")
+def test_alias_resolution_does_not_lose_the_annotations() -> None:
+    """A mapping with aliases still carries, though the pre-pass rebinds its input."""
+    # The alias pre-pass replaces the input with a plain dict, which carries nothing.
+    # The carry therefore has to happen before it, and only an Alias schema notices.
+    schema = Schema({Alias("name", "title"): str})
+    result = schema(annotate(AnnotatedDict({"title": "kitchen"}), SOURCE))
+    assert dict(result) == {"name": "kitchen"}
+    assert_carried(result, AnnotatedDict)
 
 
 def test_an_annotated_key_keeps_its_own_annotations() -> None:

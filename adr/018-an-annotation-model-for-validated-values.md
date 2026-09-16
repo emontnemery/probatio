@@ -153,6 +153,18 @@ change to any existing signature. Points to fix in the design and the docs:
   `__getattribute__`, then a metaclass). The boundary is stated here so it does not
   have to be rediscovered one review at a time.
 
+  It earns its keep immediately. The per-type cache is keyed by the class, so a
+  metaclass defining `__eq__` and `__hash__` can make two classes collide and hand a
+  property carrier the answer computed for a slot carrier, and a metaclass that defines
+  `__eq__` without `__hash__` leaves a class that cannot be a cache key at all. Both are
+  declined. The first needs a metaclass written to confuse probatio about its own
+  author's classes. The second looks at first like the ordinary `__eq__`-without-
+  `__hash__` slip, but that intuition is about instances and does not transfer: a class
+  left unhashable cannot be deep-copied or pickled _as an instance_, and breaks
+  `lru_cache`, `singledispatch`, and any set or dict holding the class. Such a class is
+  unusable as a data carrier long before probatio looks at it, so raising there is the
+  same answer the standard library already gives.
+
 - **A property is not a carrier.** An earlier revision let a type expose a property
   of that name over fields it already had, as a way to opt in without touching the
   loader. It is rejected now, and the reasons are ordinary ones rather than
