@@ -82,7 +82,8 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
     with an unset slot simply absent. Reading it unbound means the shape is
     guaranteed by the interpreter rather than by whatever a subclass returns. It
     does not mean no subclass code runs: collecting a slot value is an ordinary
-    attribute access on ``src``, so it goes through its ``__getattribute__``.
+    attribute access on ``src``, so it goes through its ``__getattribute__``. The
+    ``__dict__`` half is read straight off the instance and does not.
 
     Custom pickle state is deliberately out of scope. A class may pair an
     overridden ``__getstate__`` with a ``__setstate__`` and return any object at
@@ -94,9 +95,15 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
     from carrying state, and the same answer: reconstruct nothing, copy the
     attributes.
 
-    Both ends of the copy are ordinary attribute access, so both can reach user
-    code: reading a slot off ``src`` runs its ``__getattribute__`` and may resolve
-    through a descriptor, and writing one onto ``dst`` runs its ``__setattr__``.
+    How much user code the copy runs depends on where the state lives, and the two
+    halves are not alike. ``__dict__`` entries go straight into ``dst.__dict__``,
+    so ``__setattr__`` is never consulted and a class that refuses assignments
+    still receives every one of them; the only hook on that path is ``dst``'s
+    ``__getattribute__``, for the ``__dict__`` lookup itself. A slot runs user
+    code at both ends: reading it off ``src`` goes through ``src.__getattribute__``
+    and may resolve through a descriptor, and writing it onto ``dst`` goes through
+    ``dst.__setattr__``.
+
     That code failing is not a validation failure, so any error here is swallowed.
     A failed read carries nothing at all; a failed write leaves whatever was
     applied before it. Either way the worst case is the behavior before this

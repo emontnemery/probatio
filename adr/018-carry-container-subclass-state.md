@@ -66,14 +66,17 @@ instance state and nothing else. That bound is deliberate, not an oversight:
   is the interpreter's and the shape is fixed. Collecting a slot value is still an
   ordinary attribute access on the source, and that is the limit of the claim.
 
-Both ends of the copy are ordinary attribute access, and both can therefore reach
-user code: reading a slot off the source goes through its `__getattribute__` and
-may resolve through a descriptor, and writing one onto the destination goes
-through its `__setattr__`. That code failing is not a validation failure, so any
-error in the carry is swallowed. A failed read carries nothing at all; a failed
-write leaves whatever was applied before it. Either way the worst case is the
-behavior before this ADR, so the degradation is to the old, safe result rather
-than to a crash. `BaseException` still propagates.
+How much user code the copy runs depends on where the state lives, and the two
+halves are not alike. `__dict__` entries are written straight into the
+destination's instance dict, so `__setattr__` is never consulted and a class that
+refuses assignments still receives all of them. A slot runs user code at both
+ends: reading it off the source goes through its `__getattribute__` and may
+resolve through a descriptor, and writing it onto the destination goes through its
+`__setattr__`. That code failing is not a validation failure, so any error in the
+carry is swallowed. A failed read carries nothing at all; a failed write leaves
+whatever was applied before it. Either way the worst case is the behavior before
+this ADR, so the degradation is to the old, safe result rather than to a crash.
+`BaseException` still propagates.
 
 This is a deliberate, documented deviation from voluptuous (ADR-001). voluptuous
 builds `data.__class__()` and drops the state too. No schema starts accepting or

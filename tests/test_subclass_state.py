@@ -436,7 +436,7 @@ def test_custom_pickle_state_is_out_of_scope() -> None:
 
 
 def test_a_subclass_that_refuses_the_state_still_validates() -> None:
-    """A __setattr__ that rejects the state costs the state, not the validation."""
+    """A __setattr__ that rejects a slot costs that slot, not the validation."""
 
     class Locked(dict):
         __slots__ = ("__line__",)
@@ -454,8 +454,25 @@ def test_a_subclass_that_refuses_the_state_still_validates() -> None:
     assert not hasattr(result, "__line__")
 
 
+def test_dict_backed_state_survives_a_refusing_setattr() -> None:
+    """__dict__ state bypasses __setattr__, so a refusing subclass still keeps it."""
+
+    class LockedDict(dict):
+        def __setattr__(self, name: str, value: typing.Any) -> None:
+            message = "read-only"
+            raise AttributeError(message)
+
+    node = LockedDict({"a": 1})
+    node.__dict__["__line__"] = 12  # __setattr__ would refuse, so seed it directly
+
+    result = Schema({"a": int})(node)
+    assert result == {"a": 1}
+    assert type(result) is LockedDict
+    assert result.__line__ == 12
+
+
 def test_a_subclass_whose_state_cannot_be_read_still_validates() -> None:
-    """A slot that raises when it is read costs the state, not the validation."""
+    """A slot that raises when it is read costs that slot, not the validation."""
     blocked = True
 
     class Unreadable(dict):

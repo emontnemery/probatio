@@ -322,9 +322,12 @@ Probatio does.
   still comes back plain. That last fallback is the sequence engine's alone: a
   `dict` subclass is rebuilt by calling it with no arguments, so one whose
   constructor requires an argument raises `TypeError` out of validation rather
-  than degrading, exactly as it does in voluptuous. Copying the attributes runs
-  the class's own `__getattribute__` and `__setattr__`; if either raises, that
-  costs the state, never the validation.
+  than degrading, exactly as it does in voluptuous. How the state is copied
+  depends on where it lives: `__dict__` entries are written into the instance
+  dict directly, so a class that refuses assignments through `__setattr__` still
+  receives all of them, while a `__slots__` value is read through the class's
+  `__getattribute__` and written through its `__setattr__`, either of which can
+  refuse. A refusal costs that piece of state, never the validation.
 - **The rendered error string, `str(error)` (ADR-015).** voluptuous renders
   `expected int for dictionary value @ data['server']['port']`. Probatio renders
   the same error as `expected int at 'server.port'`: the path is a dotted trail
