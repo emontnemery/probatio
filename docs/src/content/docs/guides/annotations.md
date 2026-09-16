@@ -87,8 +87,8 @@ registration, no base class, no method to implement.
 
 ## Opting a type in
 
-A type opts in by making room for that attribute. There are three ways, and
-Probatio only ever reads and writes the attribute, so all three work.
+A type opts in by making room for that attribute. There are two ways, and what
+they have in common is that the attribute is somewhere the value simply holds it.
 
 For a `__slots__` type, it is one line:
 
@@ -117,55 +117,50 @@ class Node(dict):
 annotations_of(annotate(Node(), line=2))["line"]  # 2
 ```
 
-A type that already stores the metadata under names of its own can expose a
-property of that name over the fields it has, which means no change to how the
-data is stored. Reach for this one last, for the reasons below it:
+There is no third way, and a property of that name is specifically not one.
 
 ```python
-from probatio import Annotations, Schema
+from probatio import Schema, annotate, annotations_of
 
 
-class YamlNode(dict):
-    __slots__ = ("config_file", "line")
+class Property(dict):
+    """Not a carrier: the attribute is a call, not a place."""
+
+    __slots__ = ("_where",)
 
     @property
     def __probatio_annotations__(self):
-        return Annotations(
-            file=getattr(self, "config_file", None),
-            line=getattr(self, "line", None),
-        )
+        return getattr(self, "_where", None)
 
     @__probatio_annotations__.setter
     def __probatio_annotations__(self, annotations):
-        self.config_file = annotations.get("file")
-        self.line = annotations.get("line")
+        object.__setattr__(self, "_where", annotations)
 
 
-node = YamlNode({"name": "kitchen"})
-node.config_file = "configuration.yaml"
-node.line = 12
+node = annotate(Property({"name": "kitchen"}), line=12)
 
 validated = Schema({"name": str})(node)
 
-validated.line  # 12
-validated.config_file  # 'configuration.yaml'
+annotations_of(validated)  # None, the carry declined to run the setter
 ```
 
-A property carrier has three costs a slot does not, so prefer a slot unless you
-cannot add one:
+Probatio writes the attribute on a value it has just validated, so it will only
+do that when the write _is_ a write: a slot, or an instance `__dict__` entry. A
+property takes it as a call instead, and a setter receives the container itself.
+It could add a key a mapping schema never saw, or replace an item a sequence
+schema just checked, and the schema would then return content it never approved.
+Probatio cannot tell a well-behaved setter from that one, so it runs neither.
 
-- **It keeps only what the fields behind it can hold.** The one above stores a
-  `file` and a `line`, so `annotate(node, findings=[...])` is accepted, raises
-  nothing, and the key is gone on the next read. `supports_annotations` reports
-  `True` and is right to: the write did take. Nothing can report the loss, because
-  whether a carrier keeps what it was given is only visible by reading it back.
-- **It is several times slower.** The getter builds a fresh `Annotations` on every
-  read, once per rebuilt container. Measured below.
-- **`Object` will not carry it.** See the condition in the next section.
+`supports_annotations` answers exactly this question, and reports `False` for a
+property, for any other descriptor you wrote, and for a type that overrides
+`__setattr__`. A type that keeps the metadata under names of its own should add
+the slot and write into it, rather than build a view over the old fields.
 
-The property also needs a setter: a getter alone lets a value be read but never
-written, so nothing is carried onto a rebuilt container and `supports_annotations`
-reports `False` for it.
+:::caution[If you were relying on a property]
+The attribute has to be somewhere the value can simply hold it. Keep the fields
+you have, add the slot beside them, and have whatever populates the old fields
+populate the annotations too.
+:::
 
 :::note[Why there is no mixin to inherit]
 A base class would be the obvious convenience, and it is not offered on purpose.
@@ -183,18 +178,12 @@ the rebuilt one:
 - a `list`, `tuple`, or `set` subclass rebuilt by a sequence schema,
 - `ExactSequence`.
 
-`Object` also carries, with one condition. It does not rebuild a container, it
-constructs a new object out of the validated attributes, which means every piece
-of validated state is an attribute. Writing the annotation attribute afterwards
-can run a property setter, and that setter is free to write other attributes: a
-carrier exposing its annotations over fields the same schema validates would have
-the original, unvalidated values put back over the validated ones.
+`Object` carries too. It does not rebuild a container, it constructs a new
+object out of the validated attributes, so its metadata rides along the same way.
 
-So `Object` carries only when the write lands in the attribute itself and runs
-none of the carrier's own code, which is the `__slots__` and plain `__dict__`
-forms. A property carrier, any other descriptor the carrier defined, or a type
-overriding `__setattr__` is skipped. A container rebuild never has to ask,
-because its items are not attributes at all.
+Every one of these carries under the same condition: the write has to land in the
+attribute itself. That is worked out once per type and then cached, so it costs a
+dictionary lookup per rebuilt value.
 
 Nesting works at any depth, because each level is carried as it is rebuilt:
 
@@ -285,9 +274,11 @@ supports_annotations({})  # False
 supports_annotations("kitchen")  # False
 ```
 
-It reports whether the value can be _written_ to, not merely read from, so a
-property with no setter reports `False`. The one thing it cannot see through is a
-`__setattr__` that rejects the write itself, which is only knowable by trying.
+It reports whether the attribute is somewhere the value simply holds it, which is
+the same question Probatio asks before carrying. A property reports `False` whether
+or not it has a setter, and so does any other descriptor you wrote or a type that
+overrides `__setattr__`. The one thing it cannot see is whether a write that does
+land will be kept, since only reading it back shows that.
 
 `carry_annotations` is for a validator that builds a new container itself.
 Probatio carries annotations across the rebuilds it performs, but a
@@ -458,21 +449,20 @@ the container they built without a carry.
 
 Measured on CPython 3.14, per call to `carry_annotations`:
 
-- a subclass that does not opt in: **24 ns**, the cheap kind of miss, since the
-  type defines no such attribute,
-- a slot carrier with the annotations set: **42 ns**,
-- a slot carrier declared but _not_ set on this value: **99 ns**, because the slot
+- a subclass that does not opt in: **33 ns**,
+- a slot carrier with the annotations set: **63 ns**,
+- a slot carrier declared but _not_ set on this value: **130 ns**, because the slot
   descriptor exists and raises on the read,
-- a property carrier: **328 ns**, because the getter builds an `Annotations` every
-  time.
+- a value Probatio will not carry onto, such as a property carrier: **37 ns**, the
+  cost of the check that declines it.
 
 The third of those is worth designing around: if a loader declares the slot on
 every node but sets it on only some, the unset ones are the expensive case, not
 the cheap one. Have the loader set the attribute unconditionally.
 
-In aggregate, on a 1500-entry nested config (1502 rebuilt containers), a `dict`
-or `list` subclass that does not opt in costs about 22 ns per container, and a
-slot carrier with its annotations set costs about 49 ns, roughly 0.07 ms for the
+In aggregate, on a 1500-entry nested config (1502 rebuilt containers), a slot
+carrier with its annotations set costs about 42 ns per container beyond a subclass
+that does not opt in, roughly 0.06 ms for the
 whole document.
 
 ## Where to next

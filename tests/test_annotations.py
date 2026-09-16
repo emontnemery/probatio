@@ -30,6 +30,7 @@ from probatio import (
     supports_annotations,
 )
 from probatio import Any as AnyOf
+from probatio import annotations as annotations_module
 from probatio.annotations import ANNOTATIONS_ATTR
 
 if TYPE_CHECKING:
@@ -369,14 +370,50 @@ def test_supports_annotations_for_a_plain_dict_class() -> None:
     assert supports_annotations(DictPoint()) is True
 
 
-def test_supports_annotations_for_a_settable_property_carrier() -> None:
-    """A type exposing a settable property of that name can hold annotations."""
-    assert supports_annotations(WritableCarrier()) is True
+@pytest.mark.parametrize("carrier", [WritableCarrier, ReadOnlyCarrier])
+def test_supports_annotations_is_false_for_a_property(carrier: type) -> None:
+    """A property takes the write as a call, so probatio will not carry through it."""
+    assert supports_annotations(carrier()) is False
 
 
-def test_supports_annotations_is_false_for_a_read_only_property() -> None:
-    """A property with no setter can be read but never written, so it reports False."""
-    assert supports_annotations(ReadOnlyCarrier()) is False
+def test_supports_annotations_is_false_for_a_custom_setattr() -> None:
+    """An overridden __setattr__ takes every write, so it is not a plain attribute."""
+
+    class Guarded:
+        """Routes every attribute write through code of its own."""
+
+        __slots__ = ("__probatio_annotations__",)
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            """Perform the write through object, after seeing it."""
+            object.__setattr__(self, name, value)
+
+    assert supports_annotations(Guarded()) is False
+
+
+def test_supports_annotations_runs_no_descriptor_code() -> None:
+    """The class lookup reads the namespace, so a descriptor's __get__ never runs."""
+    calls: list[str] = []
+
+    class Loud:
+        """A data descriptor that records and refuses every read."""
+
+        def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+            """Record the read and raise, which must never happen here."""
+            calls.append("get")
+            message = "descriptor __get__ blew up"
+            raise RuntimeError(message)
+
+        def __set__(self, obj: Any, value: Any) -> None:
+            """Accept the write."""
+
+    class LoudCarrier(dict):
+        """Exposes the annotation attribute through the descriptor above."""
+
+        __probatio_annotations__ = Loud()
+
+    assert supports_annotations(LoudCarrier()) is False
+    assert calls == []
 
 
 def test_supports_annotations_is_false_for_a_class_object() -> None:
@@ -586,6 +623,99 @@ def test_a_hostile_carrier_cannot_break_the_safe_validator_contract(
     # ExactSequence is a _SafeValidator: it may return a value or raise Invalid, and
     # nothing else. The carry runs the carrier's property, so it must not leak.
     assert schema(HostileCarrier(["x"])) == ["x"]
+
+
+class InjectingDict(dict):
+    """A carrier whose annotation setter writes into the container it is given.
+
+    The hazard the write guard exists for: a setter receives the container itself, so
+    it can add a key a mapping schema never saw or replace an item a sequence schema
+    just checked.
+    """
+
+    __slots__ = ("_where",)
+
+    @property
+    def __probatio_annotations__(self) -> Any:
+        """Return whatever was stored."""
+        return getattr(self, "_where", None)
+
+    @__probatio_annotations__.setter
+    def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+        """Store the annotations, and smuggle an unvalidated key in with them."""
+        object.__setattr__(self, "_where", value)
+        self["injected"] = "not validated"
+
+
+class InjectingList(list):
+    """A carrier whose annotation setter replaces a validated item."""
+
+    __slots__ = ("_where",)
+
+    @property
+    def __probatio_annotations__(self) -> Any:
+        """Return whatever was stored."""
+        return getattr(self, "_where", None)
+
+    @__probatio_annotations__.setter
+    def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+        """Store the annotations, and replace the first item while at it."""
+        object.__setattr__(self, "_where", value)
+        if self:
+            self[0] = "not an int"
+
+
+def _injecting(cls: type, items: Any) -> Any:
+    """Build an injecting carrier that already reports annotations."""
+    value = cls(items)
+    object.__setattr__(value, "_where", Annotations(SOURCE))
+    return value
+
+
+def test_a_setter_cannot_inject_a_key_past_the_extra_policy() -> None:
+    """The mapping carry never runs a setter that could add an unvalidated key."""
+    result = Schema({"a": str}, extra=PREVENT_EXTRA)(
+        _injecting(InjectingDict, {"a": "x"})
+    )
+    assert dict(result) == {"a": "x"}
+
+
+def test_a_setter_cannot_replace_a_validated_sequence_item() -> None:
+    """The sequence carry never runs a setter that could rewrite checked items."""
+    result = Schema([int])(_injecting(InjectingList, [1, 2]))
+    assert list(result) == [1, 2]
+
+
+def test_a_setter_cannot_replace_an_exact_sequence_item() -> None:
+    """ExactSequence is guarded the same way as the sequence engine."""
+    result = Schema(ExactSequence([int, int]))(_injecting(InjectingList, [1, 2]))
+    assert list(result) == [1, 2]
+
+
+def test_the_carrier_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-type answer cache clears when it fills, so it cannot grow forever."""
+    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE_LIMIT", 4)
+    monkeypatch.setattr(annotations_module, "_PLAIN_ATTRIBUTE", {})
+    for index in range(10):
+        carrier = type(f"Carrier{index}", (dict,), {"__slots__": (ANNOTATIONS_ATTR,)})
+        assert supports_annotations(carrier()) is True
+    assert len(annotations_module._PLAIN_ATTRIBUTE) <= 4
+
+
+def test_annotations_cannot_have_their_storage_rebound() -> None:
+    """The backing mapping cannot be swapped out, which sharing one object relies on."""
+    annotations = Annotations(SOURCE)
+    with pytest.raises(AttributeError):
+        annotations._data = {"line": 99}  # type: ignore[misc]
+    assert annotations == SOURCE
+
+
+def test_annotations_refuse_attribute_deletion() -> None:
+    """Deleting the storage is refused for the same reason as rebinding it."""
+    annotations = Annotations(SOURCE)
+    with pytest.raises(AttributeError):
+        del annotations._data  # type: ignore[misc]
+    assert annotations == SOURCE
 
 
 def test_carry_annotations_shares_the_annotations_object() -> None:

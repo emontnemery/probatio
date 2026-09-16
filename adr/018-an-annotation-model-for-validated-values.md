@@ -37,13 +37,12 @@ Three ways to close it were considered.
 - `Annotations`, an immutable mapping of `str` to anything, is what a value carries.
 - A value carries it in one attribute, `__probatio_annotations__`, also exported as
   `ANNOTATIONS_ATTR`. A `__slots__` type opts in with one line, and a type with an
-  ordinary `__dict__` needs no declaration. probatio only ever reads and writes the
-  attribute, so a type that cannot add a slot can also put a property of that name
-  over fields it already has, with the caveats below.
-- Every site where probatio rebuilds a _container_ carries the annotations across:
-  the mapping engine, the sequence engine, and `ExactSequence`. `Object` carries
-  only when writing the attribute runs none of the carrier's own code, because it
-  constructs from validated attributes rather than filling a container.
+  ordinary `__dict__` needs no declaration. Those are the only two forms: the
+  attribute has to be somewhere the value simply holds it, not a property or any
+  other descriptor, for the reason in the rationale.
+- Every site where probatio rebuilds a value carries the annotations across: the
+  mapping engine, the sequence engine, `ExactSequence`, and `Object`. Each does so
+  only when writing the attribute runs none of the carrier's own code.
 - Validators read with `annotations_of`, add with `annotate`, and move annotations
   onto a value they built themselves with `carry_annotations`.
 
@@ -56,16 +55,23 @@ Three ways to close it were considered.
   should not. A defined, narrow concept can be reasoned about; "the instance's
   state" cannot. It is also why option 1 has to stop at `Object`, where reapplying
   raw state would put the _unvalidated_ attributes back over the validated ones.
-  Annotations mostly avoid that hazard, and where they do not the boundary is
-  principled rather than arbitrary: a container's items are not attributes, so
-  nothing written afterwards can reach them, while an object built by `Object` is
-  entirely attributes, so a carrier whose annotations are a property over validated
-  fields would have its unvalidated values restored over them. The condition is
-  therefore on the _write_, not on the site: `Object` carries when setting the
-  attribute lands in the attribute itself (a `__slots__` member descriptor, a plain
-  instance `__dict__`) and declines when it would run a property, another descriptor
-  the carrier defined, or an overridden `__setattr__`. That is the same distinction
-  `supports_annotations` draws, one step narrower.
+  Annotations avoid that hazard, but only because probatio never lets a carrier's
+  own code run over freshly validated output. An earlier draft of this record argued
+  that a container was safe because its items are not attributes. That was wrong: a
+  property setter receives the container itself, so it can add a key a mapping schema
+  never saw or replace an item a sequence schema just checked, and both
+  `PREVENT_EXTRA` and the element checks are bypassed. The same setter on an object
+  built by `Object` can restore the unvalidated attributes over the validated ones.
+
+  So the condition is on the write, and it is the same at every site: probatio
+  carries when setting the attribute lands in the attribute itself (a `__slots__`
+  member descriptor, a plain instance `__dict__`) and declines when it would run a
+  property, another descriptor the carrier defined, or an overridden `__setattr__`.
+  One rule, no per-site exceptions, and `supports_annotations` reports it. The answer
+  depends only on the type, so it is computed once and cached; the lookup reads class
+  namespaces directly rather than calling `getattr` on the class, which would run a
+  custom descriptor's `__get__`.
+
 - **A model lets validators participate.** This is what neither of the other options
   offers. Options 1 and 2 preserve what was already there; they give a validator no
   way to say anything. With a model there is an obvious answer: `annotate` merges

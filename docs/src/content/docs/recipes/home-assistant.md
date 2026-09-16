@@ -158,12 +158,12 @@ populated during a transition, but a value that has been through a schema will
 only have the annotations, so the readers are what makes `cv.deprecated` say
 "near configuration.yaml:12" again.
 
-A property over the existing `__config_file__` and `__line__` fields is possible,
-and it is tempting because it leaves the loader and all four readers alone. It is
-not the recommended path: such a property silently drops any annotation key that
-is not `file` or `line`, it costs several times a slot read on every rebuilt
-container, and `Object` will not carry it. The
-[annotations guide](/guides/annotations/) has the details.
+Exposing a property of that name over the existing `__config_file__` and
+`__line__` fields would leave the loader and all four readers alone, and it does
+not work: Probatio carries onto a value it has just validated only when the write
+lands in the attribute itself, never through a setter, which receives the
+container and could rewrite what validation just approved. The slot is the way in.
+The [annotations guide](/guides/annotations/) has the reasoning.
 
 The opt-in lives in the node class, not in the schemas. Nothing in
 `config_validation` changes to make the carry happen, and a schema that never

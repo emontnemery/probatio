@@ -26,16 +26,14 @@ This module is probatio's answer: a small, explicit model of that metadata.
   ``__slots__`` on one), so it opts in by declaring no ``__slots__`` and using the
   ``__dict__`` it gets instead.
 
-  A type that already keeps the metadata under names of its own *can* expose a
-  property of that name over them, since probatio only ever reads and writes the
-  attribute. That form is a poor default and the docs do not lead with it: a
-  property over fixed fields silently drops any key it does not know, it costs
-  several times a slot read on every rebuilt container, and it is the one form
-  ``Object`` declines to carry (see ``_ObjectValidator``). Prefer the slot.
-- Wherever probatio rebuilds a *container*, it carries the annotations across. The
-  rebuilt value is the original in contents *and* in what it was annotated with.
-  ``Object`` carries too, but only when writing the attribute runs none of the
-  carrier's own code, since there the validated state *is* the attributes.
+  A property of that name is *not* a third way. probatio writes the attribute on a
+  value it has just validated, so it writes only where the write lands in the
+  attribute itself; a setter is a call, it receives the container, and it could add
+  a key a mapping schema never saw or replace an item a sequence schema checked.
+  ``supports_annotations`` reports which values qualify.
+- Wherever probatio rebuilds a value, it carries the annotations across: the mapping
+  engine, the sequence engine, ``ExactSequence``, and ``Object``. The rebuilt value
+  is the original in contents *and* in what it was annotated with.
 - A validator adds to them with ``annotate``, or moves them onto a value it built
   itself with ``carry_annotations``.
 
@@ -91,6 +89,10 @@ class Annotations(Mapping[str, Any]):
 
     __slots__ = ("_data",)
 
+    # Annotated, not assigned: the slot is filled once in ``__init__`` through
+    # ``object.__setattr__``, since this class refuses ordinary attribute writes.
+    _data: Mapping[str, Any]
+
     def __init__(
         self,
         annotations: Mapping[str, Any] | None = None,
@@ -106,8 +108,27 @@ class Annotations(Mapping[str, Any]):
         if extra:
             data.update(extra)
         # The proxy wraps a dict that leaves this frame unreferenced, so the only
-        # way to the contents is read-only, through the proxy.
-        self._data: Mapping[str, Any] = MappingProxyType(data)
+        # way to the contents is read-only, through the proxy. Set through
+        # ``object.__setattr__`` because this class refuses attribute writes; this is
+        # the one write, and it happens before anything else can see the object.
+        object.__setattr__(self, "_data", MappingProxyType(data))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Refuse every attribute write: an ``Annotations`` is built once.
+
+        Without this the storage could be rebound (``annotations._data = {...}``),
+        which matters more than it looks: probatio hands the *same* object to every
+        value it carries onto, and a loader is encouraged to share one across every
+        value from the same place, so a single rebinding would change what all of
+        them report.
+        """
+        message = f"{type(self).__name__} is immutable"
+        raise AttributeError(message)
+
+    def __delattr__(self, name: str) -> None:
+        """Refuse attribute deletion, for the same reason as ``__setattr__``."""
+        message = f"{type(self).__name__} is immutable"
+        raise AttributeError(message)
 
     def __reduce__(self) -> tuple[Any, ...]:
         """Rebuild through the constructor, since a ``MappingProxyType`` cannot pickle.
@@ -156,29 +177,53 @@ class Annotations(Mapping[str, Any]):
         return Annotations(merged)
 
 
-def _writes_without_user_code(value: Any) -> bool:
-    """Report whether setting the annotation attribute on ``value`` runs no user code.
+# The ``_writes_a_plain_attribute`` answer per type. It depends only on the class, so
+# it is worth computing once, and this sits on the carry path. Bounded, and cleared
+# wholesale when it fills, so a program minting classes cannot grow it without limit
+# or pin them alive forever.
+_PLAIN_ATTRIBUTE: dict[Any, bool] = {}
+_PLAIN_ATTRIBUTE_LIMIT = 512
 
-    True for a ``__slots__`` member descriptor and for a plain instance ``__dict__``:
-    the write lands in the attribute itself and can touch nothing else. False for a
-    property or any other descriptor the carrier defined, and for a type that
-    overrides ``__setattr__``, since either is free to write whatever it likes.
 
-    ``_ObjectValidator`` is the one caller. Everywhere else probatio rebuilds a
-    container, whose items are not attributes, so a carrier's own code cannot reach
-    the validated result and this question does not arise.
+def _writes_a_plain_attribute(cls: Any) -> bool:
+    """Report whether setting the annotation attribute on ``cls`` runs no code it wrote.
+
+    True when the write lands in the attribute itself: a ``__slots__`` member
+    descriptor, or an ordinary instance ``__dict__``. False for a property, any other
+    descriptor the carrier defined, and any type overriding ``__setattr__``, all of
+    which take the write as a call and can do anything with it.
+
+    This is what probatio requires before writing the attribute on a value it just
+    validated. A carrier's setter receives the container itself, so it could add a key
+    a mapping schema never saw or replace an item a sequence schema just checked, and
+    the schema would then return content it never approved.
+
+    The lookup walks ``__mro__`` and reads each class namespace directly rather than
+    calling ``getattr`` on the class, which would run a custom descriptor's
+    ``__get__``: user code that can raise, or report something other than what the
+    descriptor would do on a write.
     """
-    cls = type(value)
-    # ``__mro__[:-1]`` is every class but ``object``: if one of them defines
-    # ``__setattr__``, the write goes through code the carrier wrote and can land
-    # anywhere. Checked by name rather than by comparing the two functions, which
-    # is the same test without confusing a type checker about bound signatures.
+    cached = _PLAIN_ATTRIBUTE.get(cls)
+    if cached is not None:
+        return cached
+    if len(_PLAIN_ATTRIBUTE) >= _PLAIN_ATTRIBUTE_LIMIT:
+        _PLAIN_ATTRIBUTE.clear()
+    answer = _compute_plain_attribute(cls)
+    _PLAIN_ATTRIBUTE[cls] = answer
+    return answer
+
+
+def _compute_plain_attribute(cls: Any) -> bool:
+    """Work out the uncached answer for ``_writes_a_plain_attribute``."""
+    # A user-defined ``__setattr__`` anywhere but ``object`` takes every write.
     if any("__setattr__" in vars(base) for base in cls.__mro__[:-1]):
         return False
-    descriptor = getattr(cls, ANNOTATIONS_ATTR, None)
-    if descriptor is None:
-        return isinstance(getattr(value, "__dict__", None), dict)
-    return isinstance(descriptor, MemberDescriptorType)
+    for base in cls.__mro__:
+        namespace = vars(base)
+        if ANNOTATIONS_ATTR in namespace:
+            return isinstance(namespace[ANNOTATIONS_ATTR], MemberDescriptorType)
+    # Nothing on the class, so the write can only land in an instance ``__dict__``.
+    return any("__dict__" in vars(base) for base in cls.__mro__[:-1])
 
 
 def supports_annotations(value: Any) -> bool:
@@ -203,16 +248,7 @@ def supports_annotations(value: Any) -> bool:
     is right to, while an annotation under any other key is dropped. Only reading
     back with ``annotations_of`` shows that.
     """
-    descriptor = getattr(type(value), ANNOTATIONS_ATTR, None)
-    if isinstance(descriptor, property):
-        return descriptor.fset is not None
-    if descriptor is not None and hasattr(type(descriptor), "__set__"):
-        # A slot's member descriptor, or any other data descriptor, accepts a write.
-        return True
-    # Nothing on the class takes the write, so it can only land in an instance
-    # ``__dict__``. A class object's ``__dict__`` is a mappingproxy, not a dict, so
-    # this is also what keeps a built-in type from reporting True.
-    return isinstance(getattr(value, "__dict__", None), dict)
+    return _writes_a_plain_attribute(type(value))
 
 
 def annotations_of(value: Any) -> Annotations | None:
@@ -328,6 +364,11 @@ def carry_annotations[T](source: Any, target: T) -> T:
     # ``source`` can raise too. A ``try`` that does not raise is free, so this costs
     # the hot path nothing; ``contextlib.suppress`` would build an object and call
     # into it every time, measured at 91 ns against 18 ns.
+    if not _writes_a_plain_attribute(type(target)):
+        # The write would run the carrier's own code, which receives the container
+        # and can rewrite the items validation just approved. Nothing is carried
+        # onto such a value; see ``_writes_a_plain_attribute``.
+        return target
     try:
         annotations = getattr(source, ANNOTATIONS_ATTR, None)
         if annotations is not None:

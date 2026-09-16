@@ -14,7 +14,7 @@ from typing import Any, NamedTuple
 
 from probatio.annotations import (
     ANNOTATIONS_ATTR,
-    _writes_without_user_code,
+    _writes_a_plain_attribute,
     carry_annotations,
 )
 from probatio.error import (
@@ -712,7 +712,7 @@ class _ObjectValidator:
         # happens only when the write lands in the attribute itself, which is the
         # ``__slots__`` and plain ``__dict__`` forms the docs recommend. A container
         # rebuild never asks, because its items are not attributes at all.
-        if _writes_without_user_code(rebuilt):
+        if _writes_a_plain_attribute(type(rebuilt)):
             carry_annotations(data, rebuilt)
         return rebuilt
 
