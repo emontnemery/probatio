@@ -317,9 +317,13 @@ Probatio does.
   the state those exchange is out of scope, and a class that defines them still
   carries its plain attributes like any other. Additive: a plain `dict` or
   `list` has no instance state, so nothing changes for it, and a container
-  rebuilt as a plain one (a foreign `Mapping`, a `Coerce(dict)`, a subclass
-  whose constructor cannot be called with one iterable) still comes back plain.
-  Copying the attributes can itself fail against a hostile `__setattr__`; that
+  rebuilt as a plain one (a foreign `Mapping`, a `Coerce(dict)`, or a _sequence_
+  subclass whose constructor does not take the validated items as one iterable)
+  still comes back plain. That last fallback is the sequence engine's alone: a
+  `dict` subclass is rebuilt by calling it with no arguments, so one whose
+  constructor requires an argument raises `TypeError` out of validation rather
+  than degrading, exactly as it does in voluptuous. Copying the attributes runs
+  the class's own `__getattribute__` and `__setattr__`; if either raises, that
   costs the state, never the validation.
 - **The rendered error string, `str(error)` (ADR-015).** voluptuous renders
   `expected int for dictionary value @ data['server']['port']`. Probatio renders

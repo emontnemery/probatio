@@ -61,15 +61,19 @@ instance state and nothing else. That bound is deliberate, not an oversight:
   one to do, would put the unvalidated items back and silently undo the
   validation. That is the same hazard that keeps `_ObjectValidator` out of this
   ADR, and it gets the same answer.
-- Bypassing the override also means no user code runs to _read_ the state, so the
-  cost and the behavior are the same for every class.
+- Bypassing the override narrows _what_ runs, not whether anything runs. No
+  subclass gets to decide what its state _is_, so the value probatio destructures
+  is the interpreter's and the shape is fixed. Collecting a slot value is still an
+  ordinary attribute access on the source, and that is the limit of the claim.
 
-Copying the attributes still touches user code at the edges: a slot may resolve
-through a descriptor, and the destination may define `__setattr__`. That code
-failing is not a validation failure, so any error in the carry is swallowed and
-the rebuilt container keeps whatever was applied before the failure, in the worst
-case nothing. That is the behavior before this ADR, so the degradation is to the
-old, safe result rather than to a crash. `BaseException` still propagates.
+Both ends of the copy are ordinary attribute access, and both can therefore reach
+user code: reading a slot off the source goes through its `__getattribute__` and
+may resolve through a descriptor, and writing one onto the destination goes
+through its `__setattr__`. That code failing is not a validation failure, so any
+error in the carry is swallowed. A failed read carries nothing at all; a failed
+write leaves whatever was applied before it. Either way the worst case is the
+behavior before this ADR, so the degradation is to the old, safe result rather
+than to a crash. `BaseException` still propagates.
 
 This is a deliberate, documented deviation from voluptuous (ADR-001). voluptuous
 builds `data.__class__()` and drops the state too. No schema starts accepting or
@@ -126,17 +130,23 @@ ordering is what makes a state-dependent subclass usable at all.
 - The plain `dict` and plain `list` paths pay nothing: the mapping engine only
   reaches the carry when it has constructed a real subclass instance, and the
   helper returns immediately for an exact built-in container. A subclass pays one
-  C-level `object.__getstate__` call, which returns `None` when there is no state.
-  Measured on a
-  10 500-line Home Assistant configuration (about 4500 container nodes) the whole
-  carry costs roughly 0.3 ms, about 66 ns per container node.
+  `object.__getstate__` call, which returns `None` when there is no state and
+  otherwise costs one attribute access per set slot. Measured on a 10 500-line
+  Home Assistant configuration (about 4500 container nodes) the whole carry costs
+  roughly 0.3 ms, about 66 ns per container node.
 - The compiled engine (ADR-011) is unaffected, and needs no generated code for
   this. Its mapping prologue guards `type(data) is not dict` and its inlined
   sequence guards `type(_v) is not list`, so any subclass input bails to the
   interpreted engine before the generated rebuild is reached. The generated code
   only ever builds plain containers, which have nothing to carry.
-- A rebuild that degrades to a plain container is unchanged and carries nothing:
-  a `Mapping` that is not a `dict` subclass, a `Coerce(dict)`, and the
-  `except TypeError` fallback for a subclass whose constructor does not accept a
-  single iterable. Those results were never the input's own type, so there is no
-  state that belongs on them.
+- A rebuild that degrades to a plain container is unchanged and carries nothing: a
+  `Mapping` that is not a `dict` subclass, a `Coerce(dict)`, and the sequence
+  engine's `except TypeError` fallback for a subclass whose constructor does not
+  take the validated items as one iterable. Those results were never the input's
+  own type, so there is no state that belongs on them.
+- That `TypeError` fallback is the sequence engine's alone. The mapping engine
+  rebuilds with a bare `data_type()` and catches nothing, so a `dict` subclass
+  whose constructor requires an argument raises `TypeError` out of validation
+  instead of degrading. That is unchanged here, and it is what voluptuous does
+  too, but the asymmetry is real and this ADR should not be read as promising a
+  graceful degrade for every container.

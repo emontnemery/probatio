@@ -80,7 +80,9 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
     common case, and the cheap one), a plain dict for an instance ``__dict__``,
     and a ``(dict_or_None, slots_dict)`` pair when ``__slots__`` are involved,
     with an unset slot simply absent. Reading it unbound means the shape is
-    guaranteed by the interpreter rather than by whatever a subclass returns.
+    guaranteed by the interpreter rather than by whatever a subclass returns. It
+    does not mean no subclass code runs: collecting a slot value is an ordinary
+    attribute access on ``src``, so it goes through its ``__getattribute__``.
 
     Custom pickle state is deliberately out of scope. A class may pair an
     overridden ``__getstate__`` with a ``__setstate__`` and return any object at
@@ -92,12 +94,13 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
     from carrying state, and the same answer: reconstruct nothing, copy the
     attributes.
 
-    Copying the attributes still touches user code at the edges (a slot may be a
-    descriptor, and ``dst`` may define ``__setattr__``), and that code failing is
-    not a validation failure. So any error here is swallowed and the rebuilt
-    container keeps whatever was applied before the failure, which in the worst
-    case is nothing: exactly the behavior before this existed. ``BaseException``
-    still propagates.
+    Both ends of the copy are ordinary attribute access, so both can reach user
+    code: reading a slot off ``src`` runs its ``__getattribute__`` and may resolve
+    through a descriptor, and writing one onto ``dst`` runs its ``__setattr__``.
+    That code failing is not a validation failure, so any error here is swallowed.
+    A failed read carries nothing at all; a failed write leaves whatever was
+    applied before it. Either way the worst case is the behavior before this
+    existed. ``BaseException`` still propagates.
     """
     if type(src) in _PLAIN_CONTAINERS:
         return
@@ -120,7 +123,7 @@ def _carry_subclass_state(src: Any, dst: Any) -> None:
         if slots:
             for name, value in slots.items():
                 setattr(dst, name, value)
-    except Exception:  # noqa: BLE001 - a descriptor or __setattr__ may raise
+    except Exception:  # noqa: BLE001 - reading or writing a slot runs user code
         return
 
 

@@ -78,13 +78,18 @@ data  # {'port': '443'}  (unchanged)
 
 ### A container subclass keeps its type and its state
 
-A `dict` or `list` subclass comes back as that subclass whenever Probatio can
-rebuild it as one, which is every subclass whose constructor accepts the
-validated items. (A subclass that takes some other constructor signature still
-falls back to a plain `dict` or `list`, as it always has.) The rebuilt container
-is a fresh instance, so Probatio copies the original's instance state onto it:
-its `__dict__` and its set `__slots__`, read through `object.__getstate__`.
-Nothing has to opt in.
+A `dict` or `list` subclass comes back as that subclass. The rebuilt container is
+a fresh instance, so Probatio copies the original's instance state onto it: its
+`__dict__` and its set `__slots__`, read through `object.__getstate__`. Nothing
+has to opt in.
+
+How the fresh instance is built differs between the two, and so does what happens
+when a subclass cannot be built that way. A sequence is rebuilt from the
+validated items, so a `list` or `tuple` subclass whose constructor does not take
+them as one iterable falls back to a plain `list` or `tuple`, as it always has. A
+mapping is rebuilt empty and filled, so a `dict` subclass needs a constructor
+callable with no arguments; one that requires an argument raises `TypeError`
+rather than degrading, which is what it does in voluptuous too.
 
 That is the default instance state, and only that. A class that defines its own
 `__getstate__`/`__setstate__` pair keeps its plain attributes like any other

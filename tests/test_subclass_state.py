@@ -454,6 +454,30 @@ def test_a_subclass_that_refuses_the_state_still_validates() -> None:
     assert not hasattr(result, "__line__")
 
 
+def test_a_subclass_whose_state_cannot_be_read_still_validates() -> None:
+    """A slot that raises when it is read costs the state, not the validation."""
+    blocked = True
+
+    class Unreadable(dict):
+        __slots__ = ("__line__",)
+
+        def __getattribute__(self, name: str) -> typing.Any:
+            if blocked and name == "__line__":
+                message = "unreadable"
+                raise RuntimeError(message)
+            return super().__getattribute__(name)
+
+    node = Unreadable({"a": 1})
+    object.__setattr__(node, "__line__", 12)
+
+    result = Schema({"a": int})(node)
+    blocked = False  # let the assertions below read the slot again
+
+    assert result == {"a": 1}
+    assert type(result) is Unreadable
+    assert not hasattr(result, "__line__")
+
+
 def test_state_is_carried_before_the_fill_so_setitem_sees_it() -> None:
     """The carry runs before the values land, so a subclass __setitem__ reads it."""
 
