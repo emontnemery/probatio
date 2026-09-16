@@ -231,9 +231,17 @@ def annotate[T](
     empty. The value is returned either way, so this reads well as the last line of
     a validator. A
     value that cannot hold annotations is returned unchanged, because a validator
-    should not fail over metadata it could not attach. A value already carrying
-    something that is not a mapping is a broken carrier, and raises ``TypeError``
-    the same way ``annotations_of`` does.
+    should not fail over metadata it could not attach, and that covers a carrier
+    whose setter raises something of its own.
+
+    Reading is not swallowed the way ``carry_annotations`` swallows it. A value
+    already carrying something that is not a mapping raises ``TypeError`` the same
+    way ``annotations_of`` does, and a carrier whose getter raises surfaces that.
+    This is an explicit call by the code that wants the annotation, so a broken
+    carrier is worth hearing about, and proceeding would mean silently discarding
+    whatever the value already had. The engine's own carry has neither luxury: it
+    runs behind every rebuild and must never turn a carrier's fault into a
+    validation failure.
     """
     if not annotations and not extra:
         return value
@@ -245,13 +253,15 @@ def annotate[T](
         if current is None
         else current.merge(annotations, **extra)
     )
-    try:  # noqa: SIM105 - contextlib.suppress costs 5x here (91 ns against 18 ns)
+    try:
         setattr(value, ANNOTATIONS_ATTR, merged)
-    except (AttributeError, TypeError):
+    except Exception:  # noqa: BLE001 - a carrier refusing the write is not an error
         # The value has nowhere to put them: no slot and no ``__dict__``, a
-        # read-only property, or a built-in type, which refuses with a TypeError
-        # rather than an AttributeError. Documented as a no-op, not an error.
-        pass
+        # read-only property, a built-in type (which refuses with a TypeError rather
+        # than an AttributeError), a frozen dataclass, or a carrier whose setter
+        # raised something of its own. A no-op, not an error, the same way
+        # ``carry_annotations`` treats it.
+        return value
     return value
 
 
@@ -278,19 +288,25 @@ def carry_annotations[T](source: Any, target: T) -> T:
     rebuilt container, and a type check on every one of them would cost more than it
     is worth. A source carrying something that is not a mapping therefore spreads it
     rather than being reported, until something reads it through ``annotations_of``.
+
+    It never raises for a carrier's own reasons. Both ends are ordinary attribute
+    access, so both can run code the carrier wrote: a property getter on ``source``,
+    a property setter or a ``__setattr__`` on ``target``. Whatever that code raises
+    is swallowed and the carry is abandoned. This is not politeness, it is the
+    safe-validator contract (see ``validators/_base.py``): ``ExactSequence`` and the
+    mapping and sequence engines all call this, and a built-in validator that leaked
+    a carrier's ``RuntimeError`` would escape the ``MultipleInvalid`` a caller
+    catches. Failing to move metadata is not a statement about the data, so it is
+    never a validation failure. ``BaseException`` still propagates.
     """
-    annotations = getattr(source, ANNOTATIONS_ATTR, None)
-    if annotations is None:
+    # The whole read-and-write is guarded, not just the write: a property getter on
+    # ``source`` can raise too. A ``try`` that does not raise is free, so this costs
+    # the hot path nothing; ``contextlib.suppress`` would build an object and call
+    # into it every time, measured at 91 ns against 18 ns.
+    try:
+        annotations = getattr(source, ANNOTATIONS_ATTR, None)
+        if annotations is not None:
+            setattr(target, ANNOTATIONS_ATTR, annotations)
+    except Exception:  # noqa: BLE001 - a carrier's own code must not fail validation
         return target
-    # This runs once per rebuilt container, so it is the one genuinely hot line in
-    # this module. A ``try`` that does not raise is free; ``contextlib.suppress``
-    # builds an object and calls into it every time, measured at 91 ns against 18 ns.
-    try:  # noqa: SIM105
-        setattr(target, ANNOTATIONS_ATTR, annotations)
-    except (AttributeError, TypeError):
-        # The target has nowhere to put them: a carrier whose annotation property is
-        # read-only, or whatever a validator passed in. The engine's own rebuild
-        # sites never land here, because they only call this with a fresh instance of
-        # a class that just proved it can hold the attribute. A no-op, not an error.
-        pass
     return target

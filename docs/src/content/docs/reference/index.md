@@ -455,8 +455,11 @@ A type can carry its own validator, so it validates by more than `isinstance`:
 
 ## Annotations
 
-Metadata a value carries beside its contents, kept across every rebuild a schema
-performs (see the [annotations guide](/guides/annotations/)):
+Metadata a value carries beside its contents, kept across every _container_
+rebuild a schema performs: every mapping and sequence rebuild, and
+`ExactSequence`. `Object` constructs from validated attributes rather than filling
+a container, so it carries nothing (see the
+[annotations guide](/guides/annotations/)):
 
 - `Annotations(annotations=None, /, **extra)`: an immutable mapping of `str` to anything, built from a mapping, keyword arguments, or both. `merge(annotations=None, /, **extra)` returns a new one with the incoming values winning on a shared key. The mapping is positional-only, so every keyword is an annotation and none is ever read as an option.
 - `ANNOTATIONS_ATTR`: the name of the one attribute a value carries its annotations in, `"__probatio_annotations__"`. A type opts in by declaring it in `__slots__`, by having an ordinary `__dict__`, or by exposing a property of that name over fields it already has.

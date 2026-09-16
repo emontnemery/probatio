@@ -274,7 +274,10 @@ carries forward an upstream request.
 - `Annotations`, `ANNOTATIONS_ATTR`, `annotate`, `annotations_of`,
   `carry_annotations`, `supports_annotations`: metadata a value carries beside its
   contents (the file and line a YAML loader recorded, for example), kept across
-  every rebuild a schema performs. A type opts in by making room for one attribute,
+  every _container_ rebuild a schema performs, which is every mapping and sequence
+  rebuild and `ExactSequence`. `Object` is the exception: it constructs from
+  validated attributes rather than filling a container, so it carries nothing. A
+  type opts in by making room for one attribute,
   `__probatio_annotations__`; a type that does not is untouched, and a plain `dict`
   or `list` never reaches the carry. Validators read with `annotations_of`, add with
   `annotate`, and move them onto a value they built themselves with

@@ -515,6 +515,78 @@ def test_carry_annotations_is_silent_on_an_unwilling_target(target: Any) -> None
     assert annotations_of(target) is None
 
 
+class HostileCarrier(list):
+    """A list subclass whose annotation getter and setter both raise.
+
+    The safe-validator contract forbids a built-in leaking anything but Invalid, and
+    both ends of the carry are attribute access that can run a carrier's own code.
+    """
+
+    __slots__ = ()
+
+    @property
+    def __probatio_annotations__(self) -> Annotations:
+        """Raise rather than report annotations."""
+        message = "carrier getter blew up"
+        raise RuntimeError(message)
+
+    @__probatio_annotations__.setter
+    def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+        """Raise rather than store annotations."""
+        message = "carrier setter blew up"
+        raise RuntimeError(message)
+
+
+def test_carry_annotations_swallows_a_hostile_getter() -> None:
+    """A source whose annotation getter raises leaves the target unchanged."""
+    target = AnnotatedList(["x"])
+    assert carry_annotations(HostileCarrier(["x"]), target) is target
+    assert annotations_of(target) is None
+
+
+def test_carry_annotations_swallows_a_hostile_setter() -> None:
+    """A target whose annotation setter raises is returned unchanged."""
+    target = HostileCarrier(["x"])
+    assert carry_annotations(annotated_list(), target) is target
+
+
+def test_annotate_swallows_a_hostile_setter() -> None:
+    """annotate treats a setter that raises as a value that cannot hold annotations."""
+
+    class HostileSetter(list):
+        """Readable, but refuses the write with an exception of its own."""
+
+        __slots__ = ()
+
+        @property
+        def __probatio_annotations__(self) -> Annotations | None:
+            """Report no annotations."""
+            return None
+
+        @__probatio_annotations__.setter
+        def __probatio_annotations__(self, value: Mapping[str, Any]) -> None:
+            """Raise rather than store annotations."""
+            message = "carrier setter blew up"
+            raise RuntimeError(message)
+
+    value = HostileSetter(["x"])
+    assert annotate(value, SOURCE) is value
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [Schema(ExactSequence([str])), Schema([str]), Schema(All([str]))],
+    ids=["exact_sequence", "sequence", "all"],
+)
+def test_a_hostile_carrier_cannot_break_the_safe_validator_contract(
+    schema: Schema,
+) -> None:
+    """A carrier raising from its own code never escapes validation as itself."""
+    # ExactSequence is a _SafeValidator: it may return a value or raise Invalid, and
+    # nothing else. The carry runs the carrier's property, so it must not leak.
+    assert schema(HostileCarrier(["x"])) == ["x"]
+
+
 def test_carry_annotations_shares_the_annotations_object() -> None:
     """Source and target share one object, which is safe because it cannot change."""
     source = annotated_dict()

@@ -75,7 +75,8 @@ node class, holding the validated items and nothing else. A rule like
 option was written.
 
 Probatio's [annotations](/guides/annotations/) close that. A node class says
-where its metadata lives, and every rebuild carries it, at every nesting depth.
+where its metadata lives, and every container rebuild carries it, at every
+nesting depth.
 
 The opt-in is one slot on the node class, and the loader writing what it knows
 into the annotations:

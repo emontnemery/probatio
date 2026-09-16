@@ -1,6 +1,6 @@
 ---
 title: Annotations
-description: Metadata a value carries beside its contents, how a type opts in, and how Probatio keeps it across every rebuild.
+description: Metadata a value carries beside its contents, how a type opts in, and how Probatio keeps it across every container rebuild.
 ---
 
 Some data arrives knowing more about itself than its contents say. A YAML loader
@@ -12,7 +12,8 @@ and it is exactly what a good error message needs.
 Validation is hostile to it. A mapping or sequence schema rebuilds its input, so
 whatever the original held beside its items does not come along. Annotations are
 Probatio's answer: a small, defined model for that metadata, carried across
-every rebuild.
+every container rebuild. (`Object` is the one exception, for a reason covered
+below.)
 
 ## What validation loses
 
@@ -310,7 +311,8 @@ annotations_of(validated)["line"]  # 7
 ```
 
 Because the engine propagates whatever it finds, an annotation a validator adds
-survives every rebuild above it, and the order in `All` does not matter. Both of
+survives every container rebuild above it, and the order in `All` does not
+matter. Both of
 these end with the loader's annotations and the validator's own:
 
 ```python

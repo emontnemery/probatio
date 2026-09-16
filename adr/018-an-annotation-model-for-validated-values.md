@@ -66,7 +66,8 @@ Three ways to close it were considered.
   offers. Options 1 and 2 preserve what was already there; they give a validator no
   way to say anything. With a model there is an obvious answer: `annotate` merges
   into what a value carries, and because the engine propagates whatever it finds,
-  an annotation a validator adds survives every rebuild above it. A validator that
+  an annotation a validator adds survives every container rebuild above it. A
+  validator that
   transforms a container calls `carry_annotations` and the metadata follows the
   transformation. Composition falls out: `All(schema, annotator)` and
   `All(annotator, schema)` both end with the loader's annotations and the
