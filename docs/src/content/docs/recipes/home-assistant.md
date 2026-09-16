@@ -65,6 +65,25 @@ emitted, since references already taken to the real module will not update. The
 [Compatibility](/getting-started/compatibility/) page covers exactly what it
 registers and when to call it.
 
+## YAML nodes keep their file and line
+
+`annotatedyaml` hands Home Assistant `NodeDictClass`, `NodeListClass` and
+`NodeStrClass`: `dict`, `list` and `str` subclasses that record in `__slots__`
+which configuration file and line each node came from. That is what lets a
+message read "The 'old' option near configuration.yaml:12 is deprecated".
+
+Validating a mapping or a sequence rebuilds it, and a rebuilt container is a
+fresh instance, so the annotation has to be carried across or it is gone after
+the first schema. Probatio carries it, through the standard
+`object.__getstate__` protocol, everywhere it rebuilds a container as the
+input's own class. Nothing registers anything and there is no Probatio-specific
+hook: a class that pickles its state correctly keeps it. A `str` node is a
+scalar, never rebuilt, so it keeps its annotation by construction.
+
+voluptuous keeps the class but not the state, so this is a deliberate deviation;
+see the [intentional
+deviations](/reference/compatibility-matrix/#intentional-deviations).
+
 ## It is tested against the real thing
 
 This is not a paraphrase of compatibility. Probatio is validated against Home

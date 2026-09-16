@@ -54,6 +54,58 @@ def _type_error(expected: str, path: list[Any], error_type: str | None) -> TypeI
     )
 
 
+# The exact built-in container types. An instance of one of these holds no state
+# of its own, so a rebuild of one has nothing to carry and returns immediately.
+_PLAIN_CONTAINERS: frozenset[type] = frozenset({dict, list, tuple, set, frozenset})
+
+
+def _carry_subclass_state(src: Any, dst: Any) -> None:
+    """Copy a container subclass's own instance state onto its rebuilt twin.
+
+    Validating a ``dict`` or ``list`` subclass rebuilds it as the same class, but
+    as a fresh, empty instance: the type survives and everything the original
+    carried in ``__dict__`` or ``__slots__`` is dropped. Home Assistant's YAML
+    nodes record the file and line they came from that way, so every schema
+    rebuild cost a config error its "near configuration.yaml:12". This copies that
+    state across, so a rebuilt container is the original in content *and* state.
+
+    The state is read through ``object.__getstate__``, the standard protocol
+    pickle and ``copy`` already use, so any class that pickles correctly carries
+    correctly and nothing has to opt in to a probatio-specific hook. It returns
+    ``None`` when there is nothing to carry (the common case), a plain dict for an
+    instance ``__dict__``, and a ``(dict_or_None, slots_dict)`` pair when
+    ``__slots__`` are involved, with an unset slot simply absent.
+
+    A class may override ``__getstate__``, and that override is user code running
+    outside the validation itself. A broken one must not turn a valid value into a
+    non-``Invalid`` exception, so any failure here is swallowed: the rebuilt
+    container is left without the carried state, which is exactly the behavior
+    before this existed.
+    """
+    if type(src) in _PLAIN_CONTAINERS:
+        return
+    try:
+        state = src.__getstate__()
+        if state is None:
+            return
+        if type(state) is tuple:
+            mapping, slots = state
+        else:
+            mapping, slots = state, None
+        if mapping:
+            # Only an overridden ``__getstate__`` can pair a mapping with a
+            # slots-only class, which has no ``__dict__`` to write it into, so
+            # look the attribute up rather than assume it.
+            instance_dict = getattr(dst, "__dict__", None)
+            if instance_dict is not None:
+                instance_dict.update(mapping)
+        if slots:
+            for name, value in slots.items():
+                setattr(dst, name, value)
+    except Exception:  # noqa: BLE001 - __getstate__ is user code; never leak
+        return
+
+
 class _Candidate(NamedTuple):
     """A compiled mapping key: how to match it and how to validate its value."""
 
@@ -223,13 +275,20 @@ class _MappingValidator:
         # Preserve real dict subclasses, matching voluptuous. Other Mapping
         # implementations validate too, but rebuild as a plain dict.
         data_type = type(data)
+        out: dict[Any, Any]
+        if data_type is dict or not issubclass(data_type, dict):
+            out = {}
+        else:
+            out = data_type()
+            # The rebuilt subclass starts empty, so carry the original's own
+            # instance state onto it. Before the fill, so a subclass
+            # ``__setitem__`` sees the state, and before the alias pre-pass
+            # below, which rebinds ``data`` to a plain dict that has none.
+            _carry_subclass_state(data, out)
 
         if self._alias_lookup:
             data = self._resolve_aliases(data)
 
-        out: dict[Any, Any] = (
-            {} if data_type is dict or not issubclass(data_type, dict) else data_type()
-        )
         errors: list[Invalid] = []
 
         # Track matches by candidate position. A bytearray is cheaper than a set
@@ -686,6 +745,10 @@ class _ObjectValidator:
         }
 
         validated = self._mapping(attributes)
+        # The constructor runs with the validated attributes, so this is object
+        # construction rather than a container rebuild: no state is carried onto
+        # it. Copying the source's raw state over would put the *unvalidated*
+        # attributes back, undoing the validation that just ran.
         return type(data)(**validated)
 
 
@@ -772,10 +835,16 @@ class _SequenceValidator:
             return result
         try:
             if issubclass(out_type, tuple) and hasattr(out_type, "_fields"):
-                return out_type(*result)
-            return out_type(result)
+                rebuilt = out_type(*result)
+            else:
+                rebuilt = out_type(result)
         except TypeError:
+            # The fallback degrades to the plain base type, which holds no state
+            # of its own, so there is nothing to carry onto it.
             return list(result) if issubclass(out_type, list) else tuple(result)
+        # A rebuilt subclass is a fresh instance; give it the original's state.
+        _carry_subclass_state(data, rebuilt)
+        return rebuilt
 
     def _validate_item(
         self,

@@ -76,6 +76,42 @@ schema(data)  # {'port': 443}
 data  # {'port': '443'}  (unchanged)
 ```
 
+### A container subclass keeps its type and its state
+
+A `dict` or `list` subclass comes back as that subclass, not as a plain `dict` or
+`list`. The result is a fresh instance of it, so Probatio copies the original's
+own instance state (its `__dict__` and its `__slots__`) onto the rebuilt
+container, through the standard `object.__getstate__` protocol. Any class that
+pickles correctly carries correctly; nothing has to opt in.
+
+That is what keeps an annotating loader's bookkeeping alive. Home Assistant's
+YAML loader records the file and line of every node in `__slots__`, and those
+survive validation, so an error message about a value can still say where the
+value was written:
+
+```python
+from probatio import Coerce, Schema
+
+
+class Node(dict):
+    __slots__ = ("line",)
+
+
+data = Node({"port": "443"})
+data.line = 12
+
+result = Schema({"port": Coerce(int)})(data)
+
+print(result)  # {'port': 443}
+print(type(result) is Node)  # True
+print(result.line)  # 12
+```
+
+voluptuous keeps the class but not the state, so this is a deliberate deviation
+(see the [intentional
+deviations](/reference/compatibility-matrix/#intentional-deviations)). A plain
+`dict` or `list` carries no state, so nothing about it changes.
+
 ## Failure is an exception, not a return value
 
 A valid value comes back from the call. An invalid one raises, so there is no

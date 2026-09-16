@@ -304,6 +304,20 @@ Probatio does.
   `Inclusive(Any("hours", "minutes"), "d")` with `Inclusive("name", "d")` accepts
   `{"hours": 1, "name": "tea"}` and rejects either one alone. A strict improvement:
   the voluptuous readings make the group either impossible or meaningless.
+- **The state a `dict` or `list` subclass carries (ADR-018).** Both libraries
+  rebuild a container as the input's own type, so a subclass survives
+  validation. voluptuous builds a fresh, empty instance of it, which keeps the
+  class and drops everything the original held in its `__dict__` or its
+  `__slots__`. Probatio copies that state onto the rebuilt container through the
+  standard `object.__getstate__` protocol, so a class that pickles correctly
+  carries correctly with no opt-in. Home Assistant's YAML nodes record their
+  source file and line that way, and used to lose it on every schema rebuild;
+  now a config error can still say which line it is about. Additive: a plain
+  `dict` or `list` has no instance state, so nothing changes for it, and a
+  container rebuilt as a plain one (a foreign `Mapping`, a `Coerce(dict)`, a
+  subclass whose constructor cannot be called with one iterable) still comes
+  back plain. A class whose own `__getstate__` raises simply carries nothing;
+  validation is never failed over it.
 - **The rendered error string, `str(error)` (ADR-015).** voluptuous renders
   `expected int for dictionary value @ data['server']['port']`. Probatio renders
   the same error as `expected int at 'server.port'`: the path is a dotted trail
